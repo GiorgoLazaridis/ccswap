@@ -829,10 +829,14 @@ class ClaudeAccountSwitcher:
         worse than the drift caveat — but gets a stale marker so setup_session
         re-bootstraps it once it is no longer live.
         """
-        if self._live_session_pids(account_num, email):
-            from claude_swap.session import mark_session_stale
+        from claude_swap.session import mark_session_stale, profile_is_quiescent
 
-            if not mark_session_stale(self._session_dir(account_num, email)):
+        session_dir = self._session_dir(account_num, email)
+        # A PID list drops unreadable records. An unreadable record cannot
+        # prove that no Claude process still owns this profile's credentials.
+        if not profile_is_quiescent(session_dir):
+
+            if not mark_session_stale(session_dir):
                 self._logger.error(
                     "Account %s's backup credentials changed but its live "
                     "session profile could not be marked stale; it may keep "

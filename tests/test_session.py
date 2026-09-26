@@ -1794,6 +1794,26 @@ class TestGuards:
                 "reporting success"
             )
 
+    def test_backup_write_preserves_profile_when_session_record_unreadable(
+        self, seeded_switcher, monkeypatch
+    ):
+        session_dir = session_dir_for(
+            seeded_switcher.backup_dir, ACCOUNT_NUM, ACCOUNT_EMAIL
+        )
+        session_dir.mkdir(parents=True, exist_ok=True)
+        credential_file = session_dir / ".credentials.json"
+        credential_file.write_text("session-owned credentials")
+        monkeypatch.setattr(
+            session_mod, "scan_live_sessions", lambda _dir: ([], 1)
+        )
+
+        seeded_switcher._write_account_credentials(
+            ACCOUNT_NUM, ACCOUNT_EMAIL, ROTATED_CREDS
+        )
+
+        assert credential_file.read_text() == "session-owned credentials"
+        assert session_mod.is_session_stale(session_dir)
+
     def test_list_skips_refresh_for_live_session_accounts(
         self, seeded_switcher, monkeypatch
     ):
