@@ -193,7 +193,9 @@ per-account `CLAUDE_CONFIG_DIR` profile. The active default account is excluded
 because `ccswap run` normally launches it directly, where a later default
 switch could change the account under a running session. A hard directory
 mapping takes priority. If its account cannot safely start, ccswap reports the
-reason instead of silently choosing another account.
+reason instead of silently choosing another account. `--smart` refuses a
+pre-set `CLAUDE_CONFIG_DIR`, because a nested profile obscures which account
+owns the default credential.
 
 Selection requires decision-trusted 5h and 7d measurements from the existing
 UsageStore. Its bounded poll plan can deliberately trust an older snapshot;

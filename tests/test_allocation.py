@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 from unittest.mock import MagicMock
+
+import pytest
 
 from claude_swap import allocation
 from claude_swap import cli
+from claude_swap.exceptions import ConfigError
 from claude_swap.models import AccountSnapshot, AccountsSnapshot
+from claude_swap.switcher import ClaudeAccountSwitcher
 from claude_swap.usage_store import UsageEntry
 
 
@@ -167,3 +172,39 @@ def test_smart_run_pins_native_session_and_dry_run_never_launches(
     assert refreshed == [False, True]
     assert constructed[-1]["read_only"] is False
     assert "Claude account selected" in capsys.readouterr().out
+
+
+def test_read_only_preview_does_not_heal_usage_store_strikes():
+    switcher = MagicMock()
+    switcher._read_only = True
+    switcher._poll_policy_inputs.return_value = (90.0, (), ("5h", "7d"))
+    switcher._static_usage_sentinel.return_value = None
+    switcher._entry_token_dead.return_value = False
+    switcher._usage_store.entries.return_value = {
+        "2": UsageEntry(auth_dead_strikes=100, last_good={}, age_s=10)
+    }
+    switcher._usage_store.reserve.return_value = {}
+    info = (2, "two@example.test", "", "org-2", False, "credentials", "")
+
+    ClaudeAccountSwitcher._collect_usage_entries(switcher, [info], fetch=set())
+
+    switcher._usage_store.clear_dead_token.assert_not_called()
+    switcher._usage_store.reserve.assert_called_once()
+
+
+def test_smart_run_refuses_nested_claude_profile(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "C:\\isolated-claude")
+    with pytest.raises(SystemExit) as exc:
+        cli._run_command(["--smart", "--dry-run"])
+    assert exc.value.code == 2
+
+
+def test_plan_json_preserves_error_envelope(monkeypatch, capsys):
+    def corrupt_store(**_kwargs):
+        raise ConfigError("corrupt roster")
+
+    monkeypatch.setattr(cli, "ClaudeAccountSwitcher", corrupt_store)
+    with pytest.raises(SystemExit) as exc:
+        cli._plan_command(["--json"])
+    assert exc.value.code == 1
+    assert json.loads(capsys.readouterr().out)["error"]["type"] == "ConfigError"

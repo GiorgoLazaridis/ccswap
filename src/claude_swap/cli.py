@@ -195,6 +195,11 @@ Examples:
         parser.error("--smart chooses the account; omit NUM|EMAIL")
     if (args.explain or args.dry_run) and not args.smart:
         parser.error("--explain and --dry-run require --smart")
+    if args.smart and os.environ.get("CLAUDE_CONFIG_DIR"):
+        parser.error(
+            "--smart requires the default Claude environment; unset "
+            "CLAUDE_CONFIG_DIR before starting another session"
+        )
 
     try:
         switcher = ClaudeAccountSwitcher(
@@ -332,7 +337,10 @@ def _plan_command(argv: list[str]) -> None:
             if plan.error:
                 print(f"No selection: {plan.error}")
     except ClaudeSwitchError as exc:
-        error(f"Error: {exc}")
+        if args.json:
+            print(json.dumps(error_envelope(exc), ensure_ascii=False))
+        else:
+            error(f"Error: {exc}")
         sys.exit(1)
 
 

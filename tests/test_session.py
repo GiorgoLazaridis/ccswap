@@ -1346,6 +1346,13 @@ class TestRun:
         )
         assert exc.value.env["CLAUDE_CONFIG_DIR"] == str(session_dir)
 
+    def test_require_session_refuses_preset_profile(
+        self, manager, capture_exec, monkeypatch
+    ):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "C:\\another-profile")
+        with pytest.raises(SessionError, match="Cannot verify --require-session"):
+            manager.run("2", [], require_session=True)
+
     def test_preset_config_dir_disables_fast_path(
         self,
         manager,

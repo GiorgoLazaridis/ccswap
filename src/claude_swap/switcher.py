@@ -5057,10 +5057,11 @@ class ClaudeAccountSwitcher:
                 # Clear the stale strike ROW too: display and fetch
                 # eligibility (_row_eligible gates on the raw count) must
                 # agree, or the slot silently freezes at last-good.
-                self._usage_store.clear_dead_token(
-                    [num], {num: identities[num]}
-                )
-                entries = store.entries(identities, models)
+                if not self._read_only:
+                    self._usage_store.clear_dead_token(
+                        [num], {num: identities[num]}
+                    )
+                    entries = store.entries(identities, models)
         requested = [
             num
             for num in info_by_num

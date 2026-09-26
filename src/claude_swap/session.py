@@ -571,6 +571,12 @@ class SessionManager:
 
         config_dir_preset = os.environ.get("CLAUDE_CONFIG_DIR")
         if config_dir_preset:
+            if require_session:
+                raise SessionError(
+                    "Cannot verify --require-session while CLAUDE_CONFIG_DIR "
+                    "is already set; unset it before launching an isolated "
+                    "account."
+                )
             # With CLAUDE_CONFIG_DIR set, "current default account" is
             # meaningless (we may already be inside a session terminal), so
             # the same-account fast path below must not trigger.
