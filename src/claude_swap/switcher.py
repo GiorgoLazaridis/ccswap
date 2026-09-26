@@ -51,7 +51,7 @@ from claude_swap.credentials import (  # noqa: F401  (constants re-exported for 
     merge_shared_credential_fields,
     shared_credential_fields,
 )
-from claude_swap.fsutil import read_text_with_retry
+from claude_swap.fsutil import read_text_with_retry, replace_with_retry
 from claude_swap.locking import FileLock
 from claude_swap.logging_config import setup_logging
 from claude_swap.models import (
@@ -604,7 +604,15 @@ class ClaudeAccountSwitcher:
         # making callers roll back around committed metadata).
         if sys.platform != "win32":
             os.chmod(temp_path, 0o600)
-        shutil.move(str(temp_path), str(path))
+        # os.replace, not shutil.move: on Windows os.rename refuses an existing
+        # destination, so shutil.move fell back to copy+unlink and rewrote the
+        # roster in place — readers could see a torn file and a crash could
+        # truncate it. os.replace is an atomic rename on every platform.
+        try:
+            replace_with_retry(temp_path, path)
+        except OSError:
+            temp_path.unlink(missing_ok=True)
+            raise
 
     # -- credential storage (delegates to CredentialStore) ----------------
     #
