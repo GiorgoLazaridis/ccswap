@@ -336,6 +336,38 @@ def _plan_command(argv: list[str]) -> None:
         sys.exit(1)
 
 
+def _doctor_command(argv: list[str], *, compact: bool = False) -> None:
+    from dataclasses import asdict
+
+    from claude_swap.diagnostics import diagnose
+
+    name = "health" if compact else "doctor"
+    parser = argparse.ArgumentParser(prog=f"{_prog_name()} {name}")
+    parser.add_argument("--json", action="store_true")
+    if not compact:
+        parser.add_argument("--compliance", action="store_true")
+    args = parser.parse_args(argv)
+    checks = diagnose(paths.get_backup_root())
+    overall = (
+        "error" if any(c.status == "error" for c in checks)
+        else "warning" if any(c.status == "warning" for c in checks)
+        else "ok"
+    )
+    if args.json:
+        print(json.dumps({"status": overall,
+                          "checks": [asdict(c) for c in checks]}, ensure_ascii=False))
+    else:
+        for check in checks:
+            print(f"{check.name:<24} {check.status.upper():<7} {check.detail}")
+        if not compact and args.compliance:
+            print("Review provider terms for your account and region:")
+            print("  Anthropic: https://www.anthropic.com/legal/consumer-terms")
+            print("  OpenAI EU: https://openai.com/policies/eu-terms-of-use/")
+            print("ccswap cannot verify provider permission for its usage endpoints.")
+    if overall == "error":
+        sys.exit(1)
+
+
 def _guard_root(switcher: ClaudeAccountSwitcher) -> None:
     """Refuse to run as root outside a container (shared by run/map/unmap)."""
     if sys.platform != "win32":
@@ -1246,6 +1278,9 @@ def main() -> None:
     if argv and argv[0] == "plan":
         _plan_command(argv[1:])
         return
+    if argv and argv[0] in ("doctor", "health"):
+        _doctor_command(argv[1:], compact=argv[0] == "health")
+        return
     if argv and argv[0] == "codex":
         _codex_command(argv[1:])
         return
@@ -1305,6 +1340,8 @@ Commands:
   %(prog)s run                        run the current dir's mapped account
   %(prog)s run --smart                select a pinned native Claude session
   %(prog)s plan                       preview the next smart session
+  %(prog)s doctor                     inspect the native CLI setup
+  %(prog)s health                     quick local status, optionally --json
   %(prog)s map <num|email> [path]     map a directory to an account
   %(prog)s map                        list directory mappings
   %(prog)s unmap [path]               remove a directory mapping

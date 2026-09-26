@@ -210,6 +210,18 @@ places an unused account near the midpoint of the largest observed gap in the
 five-hour cycle. It neither delays a requested launch nor sends a prompt to
 start a window. It is unavailable when the reset data cannot support it.
 
+### Native setup diagnostics
+
+`ccswap doctor` checks installed native CLI versions, local roster/settings,
+quota cache freshness and environment endpoint overrides. `ccswap health`
+prints the same checks compactly; both support `--json`. `doctor --compliance`
+adds links to provider terms and states the limit of its automated checks.
+Proxy variables are informational because a corporate proxy may be intended.
+Custom base URLs and auth overrides are warnings, never automatic blocks.
+URL credentials, paths and query strings are removed from diagnostic output.
+The command does not validate live tokens or Windows ACLs; it reports those
+limits rather than claiming they are healthy.
+
 Sessions use your normal `~/.claude` setup (settings, CLAUDE.md, skills, MCP servers, etc.), but each account keeps its own chat history — pass `--share-history` if you want your accounts to continue the same conversations.
 
 Running the account that is already your default login launches plain `claude` on that login instead of a session (a second copy of the active credential would go stale). Scripts that need the isolation guaranteed can pass `--require-session`, which refuses in that case instead.
