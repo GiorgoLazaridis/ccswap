@@ -124,3 +124,26 @@ def test_dry_run_reports_a_switch_without_changing_the_active_account(tmp_path):
     assert switcher.switched_to == []
     assert events[-1].kind == "switch"
     assert events[-1].dry_run
+
+
+def test_is_codex_running_survives_non_utf8_tasklist_output(monkeypatch):
+    """German tasklist output is cp850 ("ausgeführt" -> 0x81); must not raise."""
+    import subprocess
+    import sys
+
+    from claude_swap import process_detection
+
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured.update(kwargs)
+        raw = "INFO: Es werden keine Aufgaben ausgeführt.".encode("cp850")
+        # "oem" only exists on Windows; it is cp850 on a German system.
+        enc = {"oem": "cp850"}.get(kwargs.get("encoding"), kwargs.get("encoding") or "cp1252")
+        text = raw.decode(enc, kwargs.get("errors") or "strict")
+        return subprocess.CompletedProcess(args, 0, stdout=text, stderr="")
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(process_detection.subprocess, "run", fake_run)
+    assert process_detection.is_codex_running() is False
+    assert captured.get("errors") == "replace"
