@@ -71,6 +71,12 @@ Run the same `uv tool install` command to update the fork. `ccswap upgrade`
 does not upgrade fork builds from PyPI. The fork version has a `+gl.*` suffix
 so it is distinguishable from an upstream release.
 
+On Windows, stop any running `ccswap auto` supervisor before replacing the uv
+tool environment, then start it again after checking `ccswap --version`. A
+running tool process can lock `uv`'s `Scripts` directory. The current scope
+and planned v2 steps are recorded in the
+[German roadmap](docs/ccswap-v2-roadmap.de.md).
+
 ### Using pipx
 
 ```bash
