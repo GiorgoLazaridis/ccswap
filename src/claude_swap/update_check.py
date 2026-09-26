@@ -9,6 +9,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
+from claude_swap import __version__
 from claude_swap.cache import CACHE_DIR, MISSING, read_cache, write_cache
 
 CACHE_PATH = CACHE_DIR / "update_check.json"
@@ -45,6 +46,10 @@ def _detect_install_method() -> str | None:
 
 def check_for_update(current_version: str) -> str | None:
     """Return a notification string if a newer version exists, else None."""
+    # PyPI tracks upstream releases, not this fork. Its upgrade advice could
+    # replace a fork installation with upstream and discard local features.
+    if "+gl." in current_version:
+        return None
     try:
         latest_version = None
 
@@ -96,6 +101,13 @@ def run_self_upgrade() -> int:
     manager is missing from PATH.
     """
     from claude_swap.printer import accent, error
+
+    if "+gl." in __version__:
+        error(
+            "This fork build is not updated from PyPI. Reinstall it from "
+            "your fork's Git URL; see the fork installation section in README."
+        )
+        return 1
 
     method = _detect_install_method()
     commands = {

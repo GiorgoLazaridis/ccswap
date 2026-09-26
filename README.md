@@ -59,6 +59,18 @@ Codex accounts work the same way: run `codex login`, then `ccswap codex add`.
 uv tool install ccswap
 ```
 
+This installs the upstream PyPI package. To install Giorgo's fork on Windows
+with Python 3.13, use:
+
+```powershell
+uv tool install --force --refresh --python 3.13 'git+https://github.com/GiorgoLazaridis/ccswap.git@main'
+ccswap --version
+```
+
+Run the same `uv tool install` command to update the fork. `ccswap upgrade`
+does not upgrade fork builds from PyPI. The fork version has a `+gl.*` suffix
+so it is distinguishable from an upstream release.
+
 ### Using pipx
 
 ```bash

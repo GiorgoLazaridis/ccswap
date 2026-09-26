@@ -36,6 +36,11 @@ def _write_cache(path, version, timestamp=None):
 
 class TestCheckForUpdate:
     @patch("claude_swap.update_check.urllib.request.urlopen")
+    def test_fork_version_does_not_query_pypi(self, mock_urlopen):
+        assert check_for_update("0.36.0+gl.1") is None
+        mock_urlopen.assert_not_called()
+
+    @patch("claude_swap.update_check.urllib.request.urlopen")
     def test_newer_version_available(self, mock_urlopen, tmp_path, monkeypatch):
         monkeypatch.setattr("claude_swap.update_check.CACHE_PATH", tmp_path / "cache.json")
         mock_urlopen.return_value = _make_pypi_response("0.4.0")
@@ -214,6 +219,7 @@ class TestCheckForUpdateMessage:
         assert "pipx upgrade" not in result
 
 
+@patch("claude_swap.update_check.__version__", "0.3.2")
 @patch("claude_swap.update_check.sys.platform", "linux")
 class TestRunSelfUpgrade:
     @patch("claude_swap.update_check.subprocess.run")
@@ -265,6 +271,7 @@ class TestRunSelfUpgrade:
         assert "PATH" in err
 
 
+@patch("claude_swap.update_check.__version__", "0.3.2")
 @patch("claude_swap.update_check.sys.platform", "win32")
 class TestRunSelfUpgradeWindows:
     """On Windows the running .exe is locked, so we never upgrade in place --
@@ -295,3 +302,11 @@ class TestRunSelfUpgradeWindows:
         assert "uv tool upgrade ccswap" in err
         assert "pipx upgrade ccswap" in err
         assert "pip install --upgrade ccswap" in err
+
+
+def test_fork_self_upgrade_refuses_pypi(monkeypatch, capsys):
+    monkeypatch.setattr("claude_swap.update_check.__version__", "0.36.0+gl.1")
+    with patch("claude_swap.update_check.subprocess.run") as mock_run:
+        assert run_self_upgrade() == 1
+        mock_run.assert_not_called()
+    assert "not updated from PyPI" in capsys.readouterr().err
