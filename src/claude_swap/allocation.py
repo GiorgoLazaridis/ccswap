@@ -27,6 +27,7 @@ class Candidate:
     reasons: tuple[str, ...]
     skipped: str | None = None
     mapped: bool = False
+    stale: bool = False
 
     @property
     def headroom(self) -> float:
@@ -86,8 +87,8 @@ def _candidate(
         skipped = "stored credentials unavailable"
     elif account.disabled and not mapped:
         skipped = "disabled for automatic selection"
-    elif five is None or weekly is None or age is None or age > STALE_OK_S:
-        skipped = "5h/7d usage unknown or older than five minutes"
+    elif five is None or weekly is None or age is None:
+        skipped = "5h/7d usage unknown or no longer decision-trusted"
     elif max(five, weekly) >= 100.0:
         skipped = "quota window exhausted"
 
@@ -102,6 +103,8 @@ def _candidate(
             reasons.append(f"7d headroom {100.0 - weekly:.0f}%")
             reasons.append(f"{sessions} active sessions")
             reasons.append(f"quota snapshot {age:.0f}s old")
+            if age > STALE_OK_S:
+                reasons.append("trusted stale snapshot; actual headroom may be lower")
             if mapped:
                 reasons.append("hard project mapping")
 
@@ -116,6 +119,7 @@ def _candidate(
         reasons=tuple(reasons),
         skipped=skipped,
         mapped=mapped,
+        stale=age is not None and age > STALE_OK_S,
     )
 
 
@@ -161,11 +165,12 @@ def allocate(
     eligible = [c for c in candidates if c.skipped is None]
     if not eligible:
         return AllocationPlan(None, candidates, None,
-                              "No safe isolated account has fresh 5h/7d usage",
+                              "No safe isolated account has decision-trusted 5h/7d headroom",
                               advice)
     best_headroom = max(c.headroom for c in eligible)
     comparable = [c for c in eligible if best_headroom - c.headroom <= 10.0]
-    winner = min(comparable, key=lambda c: (c.sessions, -c.headroom, int(c.number)))
+    winner = min(comparable, key=lambda c: (c.stale, c.sessions,
+                                            -c.headroom, int(c.number)))
     return AllocationPlan(winner.number, candidates, None, None, advice)
 
 
@@ -182,7 +187,7 @@ def _window_advice(
     phases: list[float] = []
     dormant: list[Candidate] = []
     for account, candidate in zip(snapshot.accounts, candidates):
-        if candidate.age_s is None or candidate.age_s > STALE_OK_S:
+        if account.usage.decision_value() is None:
             continue
         value = account.usage.decision_value()
         if not isinstance(value, dict):

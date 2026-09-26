@@ -81,6 +81,20 @@ def test_unknown_stale_and_unreadable_processes_are_not_guessed(
     assert all(c.skipped for c in result.candidates)
 
 
+def test_store_trusted_stale_is_eligible_but_fresh_peer_wins_close_rank(
+    tmp_path, monkeypatch
+):
+    stale = account("2", 20, 20, age=600)
+    stale = replace(stale, usage=replace(stale.usage, trust_extended=True))
+    fresh = account("3", 25, 25)
+    result = plan(tmp_path, monkeypatch,
+                  [account("1", 10, 10, active=True), stale, fresh])
+    assert result.selected == "3"
+    assert result.candidates[1].skipped is None
+    assert result.candidates[1].stale is True
+    assert "actual headroom may be lower" in result.candidates[1].reasons[-1]
+
+
 def test_disabled_is_skipped_unless_explicit_project_mapping(tmp_path, monkeypatch):
     accounts = [account("1", 10, 10, active=True),
                 account("2", 10, 10, disabled=True)]

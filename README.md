@@ -195,12 +195,14 @@ switch could change the account under a running session. A hard directory
 mapping takes priority. If its account cannot safely start, ccswap reports the
 reason instead of silently choosing another account.
 
-Selection requires both 5h and 7d usage measurements no older than five
-minutes. Unknown usage, unavailable credentials, exhausted windows and
-unreadable session process records are not guessed. Among accounts with
-similar binding headroom (within ten percentage points), one with fewer live
-isolated sessions wins. If no account qualifies, use an explicit `ccswap run N`
-or inspect usage with `ccswap list`. `--dry-run` and `plan` do not launch Claude
+Selection requires decision-trusted 5h and 7d measurements from the existing
+UsageStore. Its bounded poll plan can deliberately trust an older snapshot;
+that age and the lower confidence are shown. Unknown usage, unavailable
+credentials, exhausted windows and unreadable session process records are not
+guessed. Among accounts with similar binding headroom (within ten percentage
+points), fresher data and then fewer live isolated sessions win. If no account
+qualifies, use an explicit `ccswap run N` or inspect usage with `ccswap list`.
+`--dry-run` and `plan` do not launch Claude
 or refresh credentials; `--refresh` and a real `--smart` launch use the normal
 bounded usage collector. Existing pending data migrations are skipped by the
 read-only previews.
