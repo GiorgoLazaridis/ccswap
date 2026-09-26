@@ -985,6 +985,10 @@ class SessionManager:
                 env=_probe_env(session_dir),
                 capture_output=True,
                 text=True,
+                # Node writes UTF-8; the Windows locale default (cp1252) can
+                # crash on it (e.g. "Á" is C3 81 and 0x81 is undefined).
+                encoding="utf-8",
+                errors="replace",
                 timeout=_AUTH_STATUS_TIMEOUT,
             )
         except subprocess.TimeoutExpired:

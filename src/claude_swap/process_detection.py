@@ -364,9 +364,15 @@ def is_codex_running() -> bool:
                 ["tasklist", "/FI", "IMAGENAME eq codex.exe", "/NH"],
                 capture_output=True,
                 text=True,
+                # tasklist writes in the OEM code page (cp850 on German
+                # Windows: "ausgeführt" carries 0x81, undefined in cp1252).
+                # A strict decode killed the reader thread, left stdout None
+                # and turned a Codex switch tick into ERROR.
+                encoding="oem",
+                errors="replace",
                 timeout=5,
             )
-            return "codex.exe" in completed.stdout.lower()
+            return "codex.exe" in (completed.stdout or "").lower()
         # pgrep -x matches the executable name exactly, so it won't fire on
         # ccswap itself or on unrelated paths that merely contain "codex".
         completed = subprocess.run(
