@@ -176,6 +176,40 @@ ccswap run 2 --share-history     # share your chat history with this account too
 ccswap run 2 --require-session   # refuse rather than run plain claude if 2 is the default login
 ```
 
+### Choose an isolated Claude session automatically
+
+```powershell
+ccswap run --smart                 # select an account, then start native Claude Code
+ccswap run --smart --explain       # show every candidate
+ccswap run --smart --dry-run       # preview without starting Claude
+ccswap plan                       # read-only preview, including a passive 5h window suggestion
+ccswap plan --json                # machine-readable preview
+ccswap plan --refresh             # collect due usage through the existing poll policy
+```
+
+`--smart` is for a **new** Claude Code session. It does not switch the default
+login or change `ccswap auto`; the selected account stays in its existing
+per-account `CLAUDE_CONFIG_DIR` profile. The active default account is excluded
+because `ccswap run` normally launches it directly, where a later default
+switch could change the account under a running session. A hard directory
+mapping takes priority. If its account cannot safely start, ccswap reports the
+reason instead of silently choosing another account.
+
+Selection requires both 5h and 7d usage measurements no older than five
+minutes. Unknown usage, unavailable credentials, exhausted windows and
+unreadable session process records are not guessed. Among accounts with
+similar binding headroom (within ten percentage points), one with fewer live
+isolated sessions wins. If no account qualifies, use an explicit `ccswap run N`
+or inspect usage with `ccswap list`. `--dry-run` and `plan` do not launch Claude
+or refresh credentials; `--refresh` and a real `--smart` launch use the normal
+bounded usage collector. Existing pending data migrations are skipped by the
+read-only previews.
+
+The optional window suggestion uses only current quota reset timestamps. It
+places an unused account near the midpoint of the largest observed gap in the
+five-hour cycle. It neither delays a requested launch nor sends a prompt to
+start a window. It is unavailable when the reset data cannot support it.
+
 Sessions use your normal `~/.claude` setup (settings, CLAUDE.md, skills, MCP servers, etc.), but each account keeps its own chat history — pass `--share-history` if you want your accounts to continue the same conversations.
 
 Running the account that is already your default login launches plain `claude` on that login instead of a session (a second copy of the active credential would go stale). Scripts that need the isolation guaranteed can pass `--require-session`, which refuses in that case instead.

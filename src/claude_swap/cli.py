@@ -9,7 +9,7 @@ import sys
 
 from claude_swap import __version__, paths, printer
 from claude_swap.codex import CodexAccountSwitcher
-from claude_swap.exceptions import ClaudeSwitchError
+from claude_swap.exceptions import ClaudeSwitchError, SessionError
 from claude_swap.json_output import error_envelope
 from claude_swap.printer import (
     accent,
@@ -144,6 +144,18 @@ Examples:
         "directory's mapping (see `ccswap map`).",
     )
     parser.add_argument(
+        "--smart", action="store_true",
+        help="Choose an account for a new isolated native Claude session",
+    )
+    parser.add_argument(
+        "--explain", action="store_true",
+        help="Show every candidate and its reason (with --smart)",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Show the smart choice without starting Claude or changing credentials",
+    )
+    parser.add_argument(
         "--no-share",
         action="store_true",
         help=(
@@ -179,14 +191,38 @@ Examples:
         help="Enable debug logging",
     )
     args = parser.parse_args(head)
+    if args.smart and args.account is not None:
+        parser.error("--smart chooses the account; omit NUM|EMAIL")
+    if (args.explain or args.dry_run) and not args.smart:
+        parser.error("--explain and --dry-run require --smart")
 
     try:
-        switcher = ClaudeAccountSwitcher(debug=args.debug)
+        switcher = ClaudeAccountSwitcher(
+            debug=args.debug, read_only=args.smart and args.dry_run
+        )
         _guard_root(switcher)
 
         from claude_swap.session import SessionManager
 
         manager = SessionManager(switcher)
+
+        if args.smart:
+            plan = _native_session_plan(switcher, refresh=not args.dry_run)
+            _print_native_session_plan(plan, explain=args.explain)
+            if plan.error:
+                raise SessionError(plan.error)
+            if args.dry_run:
+                return
+            # A changed default login between the snapshot and run() is caught
+            # by require_session, rather than launching an unpinned fast path.
+            manager.run(
+                plan.selected,
+                tail,
+                share=not args.no_share,
+                share_history=args.share_history,
+                require_session=True,
+            )
+            return
 
         if args.account is not None:
             manager.run(
@@ -228,6 +264,76 @@ Examples:
     except KeyboardInterrupt:
         print(f"\n{dimmed('Operation cancelled')}")
         sys.exit(130)
+
+
+def _native_session_plan(switcher: ClaudeAccountSwitcher, *, refresh: bool):
+    """Use the existing quota collector, never the auto-switch engine."""
+    from claude_swap.allocation import allocate
+
+    slot, missing = switcher.slot_for_directory(os.getcwd())
+    snapshot = switcher.accounts_snapshot(fetch=None if refresh else set())
+    return allocate(
+        snapshot,
+        backup_dir=switcher.backup_dir,
+        mapped_account=slot,
+        missing_mapping=missing if slot is None else None,
+    )
+
+
+def _print_native_session_plan(plan, *, explain: bool) -> None:
+    from datetime import datetime
+
+    chosen = next(
+        (c for c in plan.candidates if c.number == plan.selected), None
+    )
+    if chosen is not None:
+        label = chosen.alias or chosen.email
+        print(f"Claude account selected: {label} (Account-{chosen.number})")
+        print("Why:")
+        for reason in chosen.reasons:
+            print(f"  • {reason}")
+    if explain:
+        print("Candidates:")
+        for candidate in plan.candidates:
+            label = candidate.alias or candidate.email
+            status = candidate.skipped or (
+                "selected" if candidate.number == plan.selected else "eligible"
+            )
+            print(f"  Account-{candidate.number} {label}: {status}")
+    if plan.window_advice is not None:
+        advice = plan.window_advice
+        when = datetime.fromtimestamp(advice.ideal_start_ts).astimezone()
+        print(
+            f"Next natural 5h window slot: Account-{advice.account} "
+            f"around {when:%Y-%m-%d %H:%M} "
+            f"(from {advice.observed_windows} observed windows; advisory only)"
+        )
+
+
+def _plan_command(argv: list[str]) -> None:
+    """Read-only Claude session allocation preview; --refresh uses normal polling."""
+    from dataclasses import asdict
+
+    parser = argparse.ArgumentParser(prog=f"{_prog_name()} plan")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--refresh", action="store_true",
+        help="Collect due quota through the existing bounded poll policy",
+    )
+    args = parser.parse_args(argv)
+    try:
+        switcher = ClaudeAccountSwitcher(read_only=not args.refresh)
+        _guard_root(switcher)
+        plan = _native_session_plan(switcher, refresh=args.refresh)
+        if args.json:
+            print(json.dumps(asdict(plan), ensure_ascii=False))
+        else:
+            _print_native_session_plan(plan, explain=True)
+            if plan.error:
+                print(f"No selection: {plan.error}")
+    except ClaudeSwitchError as exc:
+        error(f"Error: {exc}")
+        sys.exit(1)
 
 
 def _guard_root(switcher: ClaudeAccountSwitcher) -> None:
@@ -1137,6 +1243,9 @@ def main() -> None:
     if argv and argv[0] == "run":
         _run_command(argv[1:])
         return  # only reachable in tests where exec/exit is mocked
+    if argv and argv[0] == "plan":
+        _plan_command(argv[1:])
+        return
     if argv and argv[0] == "codex":
         _codex_command(argv[1:])
         return
@@ -1194,6 +1303,8 @@ Commands:
   %(prog)s enable <num|email>         return a disabled account to rotation
   %(prog)s run <num|email> [-- ...]   run as an account, this terminal only
   %(prog)s run                        run the current dir's mapped account
+  %(prog)s run --smart                select a pinned native Claude session
+  %(prog)s plan                       preview the next smart session
   %(prog)s map <num|email> [path]     map a directory to an account
   %(prog)s map                        list directory mappings
   %(prog)s unmap [path]               remove a directory mapping

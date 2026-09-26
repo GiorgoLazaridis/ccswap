@@ -329,7 +329,8 @@ def _sweep_legacy_keyring(usernames: list[str], removed_items: list[str]) -> Non
 class ClaudeAccountSwitcher:
     """Multi-account switcher for Claude Code."""
 
-    def __init__(self, debug: bool = False):
+    def __init__(self, debug: bool = False, *, read_only: bool = False):
+        self._read_only = read_only
         self.home = Path.home()
         self.platform = Platform.detect()
         self.backup_dir = get_backup_root()
@@ -339,7 +340,7 @@ class ClaudeAccountSwitcher:
         # Migration is a no-op on macOS/Windows where backup_dir already
         # equals the legacy path. MigrationError on a genuine collision
         # propagates as a ClaudeSwitchError and is caught by the CLI.
-        if migrate_legacy_backup_dir(self.backup_dir):
+        if not read_only and migrate_legacy_backup_dir(self.backup_dir):
             legacy = get_legacy_backup_root()
             print(
                 f"claude-swap: migrated data from {legacy} to {self.backup_dir}",
@@ -411,7 +412,8 @@ class ClaudeAccountSwitcher:
         # aborts construction. No-op on fresh installs / once recorded.
         from claude_swap.migrations import run_migrations
 
-        run_migrations(self)
+        if not read_only:
+            run_migrations(self)
 
     def _is_running_in_container(self) -> bool:
         """Check if running inside a container."""
@@ -3455,6 +3457,8 @@ class ClaudeAccountSwitcher:
         """Get sequence data, ensuring org-field migration has run."""
         data = self._get_sequence_data()
         if not data:
+            return data
+        if self._read_only:
             return data
         needs_migration = any(
             "organizationUuid" not in acc
