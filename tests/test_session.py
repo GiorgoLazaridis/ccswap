@@ -1346,6 +1346,21 @@ class TestRun:
         )
         assert exc.value.env["CLAUDE_CONFIG_DIR"] == str(session_dir)
 
+    def test_require_session_refuses_default_change_during_setup(
+        self, manager, capture_exec, monkeypatch, tmp_path
+    ):
+        identities = iter([None, (ACCOUNT_EMAIL, ORG_UUID)])
+        monkeypatch.setattr(
+            manager.switcher, "_get_current_account", lambda: next(identities)
+        )
+        monkeypatch.setattr(
+            manager, "setup_session",
+            lambda *_args: (tmp_path, ACCOUNT_NUM, ACCOUNT_EMAIL),
+        )
+
+        with pytest.raises(SessionError, match="became the active default login"):
+            manager.run("2", [], require_session=True)
+
     def test_require_session_refuses_preset_profile(
         self, manager, capture_exec, monkeypatch
     ):

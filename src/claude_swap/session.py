@@ -619,6 +619,17 @@ class SessionManager:
             identifier, share, share_history
         )
 
+        if require_session:
+            # Auto-switch can change the default login while setup_session is
+            # refreshing or bootstrapping. Refuse before launching a second
+            # live copy of the same rotating credential family.
+            current = self.switcher._get_current_account()
+            if current is not None and current == (email, org_uuid):
+                raise SessionError(
+                    f"Account-{account_num} became the active default login "
+                    "during session setup; retry smart selection."
+                )
+
         print(
             f"{accent('Launching')} Account-{account_num} ({email}) "
             f"{muted('[session mode]')}"
