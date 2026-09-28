@@ -16,6 +16,8 @@ bei `0.36.0+gl.1`.
   Paketmetadaten verweisen auf Repository, Issues und Changelog des Forks.
   Repo-Regeln und CI verlangen künftig beide Sprachen bei Codeänderungen. Der
   CI-Workflow lässt sich auch ohne vorherigen Vergleichs-Commit manuell prüfen.
+  Die README verlinkt außerdem den vollständigen Git-Vergleich mit der
+  Upstream-Basis.
 - **Nur eine dauerhafte Auto-Schleife je Anbieter.** Ein zweiter Aufruf von
   `ccswap auto` oder `ccswap codex auto` endet mit Fehler statt parallel zu
   pollen und zu wechseln. Einmalige Aufrufe mit `--once` bleiben möglich.

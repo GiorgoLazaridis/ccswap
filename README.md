@@ -66,6 +66,8 @@ The [English changelog](CHANGELOG.md) and [German changelog](CHANGELOG.de.md)
 describe each fork build and link to the commits behind it. Both are updated
 with every user-visible fork change; [AGENTS.md](AGENTS.md) records the
 maintenance rule. The comparison starts at upstream `v0.35.1` (`14df53c`).
+The [complete Git comparison](https://github.com/GiorgoLazaridis/ccswap/compare/v0.35.1...main)
+shows every fork commit, including maintenance work omitted from the summaries.
 
 ## Installation
 
