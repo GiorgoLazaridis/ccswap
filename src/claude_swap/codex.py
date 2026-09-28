@@ -140,6 +140,32 @@ def _in(reset: object, now: float) -> str:
     return f"in {days}d {hours}h" if days else f"in {hours}h {mins}m" if hours else f"in {mins}m"
 
 
+def _cached_reset_line(snapshot: dict[str, Any] | None, number: str,
+                       now: float | None = None) -> str:
+    """Banked resets with expiries and when to redeem the next one."""
+    from claude_swap.reset_advice import advise
+
+    row = (snapshot or {}).get("accounts", {}).get(number)
+    now = time.time() if now is None else now
+    advice = advise(row.get("usage") if isinstance(row, dict) else None, now)
+    if advice is None:
+        return ""
+
+    def when(ts: float) -> str:
+        return datetime.fromtimestamp(ts).strftime("%b %d %H:%M")
+
+    parts = [f"Resets {advice.count}"]
+    if advice.expiries:
+        parts.append("expire " + ", ".join(when(t) for t in advice.expiries))
+    if advice.worth_now:
+        parts.append(f"redeem one now ({advice.reason})")
+    elif advice.deadline is not None:
+        parts.append(f"redeem next by {when(advice.deadline)} ({advice.reason})")
+    else:
+        parts.append(advice.reason)
+    return " · ".join(parts)
+
+
 def _cached_usage_line(snapshot: dict[str, Any] | None, number: str,
                        now: float | None = None) -> str:
     """``5h  64% in 2h 12m · 7d  25% in 6d 3h · 1m ago`` from the auto snapshot."""
@@ -628,6 +654,9 @@ class CodexAccountSwitcher:
                 tag = account["label"] if account["planType"] else f"Codex ({account['authMode']})"
                 print(f"{account['number']:>2}  {account['email']}  [{tag}]{marker}")
                 line = _cached_usage_line(snapshot, str(account["number"]))
+                if line:
+                    print(f"    {line}")
+                line = _cached_reset_line(snapshot, str(account["number"]))
                 if line:
                     print(f"    {line}")
         return payload

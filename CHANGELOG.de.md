@@ -9,6 +9,24 @@ Daten sind Commit-Daten. Der [Git-Tag `v0.35.1-gl.1`](https://github.com/GiorgoL
 trägt noch die Paketversion `0.35.1`; die Paketversionen mit `+gl.*` beginnen
 bei `0.36.0+gl.1`.
 
+## 0.36.0+gl.5 — 2026-09-28
+
+- **Empfehlung für gesammelte Codex-Resets.** Codex meldet das Ablaufdatum
+  jedes verfügbaren Resets; ccswap behält jetzt alle. Weil ein Einlösen eine
+  neue Woche startet, plant ccswap rückwärts, sodass jeder Reset eine Woche
+  vor dem nächsten bekommt, bewertet die nächste Frist (grün > 7 Tage, orange
+  2–7, rot < 2) und markiert, wann sich das Einlösen jetzt lohnt (Woche ≥ 90 %
+  und kein Wochenreset innerhalb eines Tages, oder der Reset ginge sonst
+  verloren). `ccswap list` zeigt Ablaufdaten und Empfehlung, die Statuszeile
+  `R<Anzahl>` in dieser Farbe, mit `!`, wenn sich das Einlösen jetzt lohnt.
+  Claude-Resets stehen nicht in dessen Nutzungs-API und werden nicht gezeigt.
+- **Zweizeilige Statuszeile.** Eine erste Zeile zeigt Modell und aktuelle
+  Kontextgröße aus dem Session-JSON von Claude Code (grün < 50 %, gelb < 80 %,
+  rot); der Kontenpool rückt in die zweite Zeile. Aufbau und Kontextfarben
+  sind angeregt von [claude-hud](https://github.com/jarrodwatts/claude-hud)
+  und [ccusage](https://github.com/ccusage/ccusage); Code wurde von dort nicht
+  übernommen.
+
 ## 0.36.0+gl.4 — 2026-09-28
 
 - **Codex in Statuszeile und `ccswap list`.** `ccswap codex auto` schreibt je

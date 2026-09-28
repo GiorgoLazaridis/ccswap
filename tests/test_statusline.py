@@ -54,8 +54,8 @@ def test_session_rate_limits_override_cache_and_keep_other_windows():
         snap(account("1", five=10, weekly=20, active=True)), session,
         now=NOW, color=False,
     )
-    # Context and cost are deliberately not shown.
-    assert line == "Claude #1 user1 5h 42% 7d 20%"
+    # Cost is deliberately not shown; context gets its own first line.
+    assert line == "\U0001f9e0 12%\nClaude #1 user1 5h 42% 7d 20%"
 
 
 def test_configured_model_limit_is_shown_and_binds_reserve():
@@ -230,3 +230,27 @@ def test_roster_change_drops_codex_snapshot(tmp_path, monkeypatch):
     target.write_text("{}", encoding="utf-8")
     switcher._write_sequence({"accounts": {}, "sequence": []})
     assert not target.exists()
+
+
+def test_session_line_shows_model_and_context_first():
+    session = {
+        "model": {"display_name": "Opus 5.5"},
+        "context_window": {"used_percentage": 40, "context_window_size": 1_000_000,
+                           "current_usage": {"input_tokens": 12,
+                                             "cache_creation_input_tokens": 1500,
+                                             "cache_read_input_tokens": 398488}},
+        "cost": {"total_cost_usd": 9.0},
+    }
+    first, second = statusline.render(
+        snap(account("1", five=1, weekly=1, active=True)), session, now=NOW, color=False,
+    ).split("\n")
+    assert first == "\U0001f916 Opus 5.5 | \U0001f9e0 400,000 (40%)"
+    assert second == "Claude #1 user1 5h 1% 7d 1%"
+
+
+def test_session_line_falls_back_to_window_size_and_colors_context():
+    session = {"context_window": {"used_percentage": 85, "context_window_size": 200_000}}
+    assert statusline._session_line(session, color=False) == "\U0001f9e0 170,000 (85%)"
+    assert statusline._RED in statusline._session_line(session, color=True)
+    assert statusline._session_line({}, color=False) is None
+    assert statusline._session_line(None, color=False) is None

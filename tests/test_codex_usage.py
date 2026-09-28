@@ -330,6 +330,7 @@ def test_fetch_usage_adds_banked_reset_count_and_earliest_expiry(monkeypatch):
         "reset_credits": {
             "available": 3,
             "expires_at": "2026-07-20T12:00:00Z",
+            "expiries": ["2026-07-20T12:00:00Z", "2026-08-10T12:00:00Z"],
         },
     }
     assert requested[1].full_url.endswith("/wham/rate-limit-reset-credits")

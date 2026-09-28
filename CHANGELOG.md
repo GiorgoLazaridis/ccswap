@@ -9,6 +9,24 @@ The [`v0.35.1-gl.1` Git tag](https://github.com/GiorgoLazaridis/ccswap/tree/v0.3
 still declares package version `0.35.1`; the `+gl.*` package versions begin
 with `0.36.0+gl.1`.
 
+## 0.36.0+gl.5 — 2026-09-28
+
+- **Advice for banked Codex resets.** Codex reports every available reset's
+  expiry; ccswap now keeps all of them. Because redeeming one starts a new
+  weekly window, it plans backwards so each reset gets a week before the next
+  is due, rates the next deadline (green > 7 days, orange 2–7, red < 2) and
+  flags when redeeming now pays off (week ≥ 90 % and not resetting within a
+  day, or the reset would be lost). `ccswap list` shows expiries and the
+  recommendation; the status line shows `R<count>` in that color, with `!`
+  when it is worth redeeming now. Claude's limit resets are not in its usage
+  API and are not shown.
+- **Two-line status line.** A first line shows the model and current context
+  size from Claude Code's session JSON (green < 50 %, yellow < 80 %, red);
+  the account pool moves to the second line. The layout and context colors
+  were inspired by [claude-hud](https://github.com/jarrodwatts/claude-hud)
+  and [ccusage](https://github.com/ccusage/ccusage); no code was taken from
+  them.
+
 ## 0.36.0+gl.4 — 2026-09-28
 
 - **Codex in the status line and in `ccswap list`.** `ccswap codex auto`

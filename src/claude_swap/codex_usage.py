@@ -196,6 +196,10 @@ def _reset_credits(payload: object) -> dict[str, Any] | None:
         ]
         if expiries:
             result["expires_at"] = min(expiries)
+            # Every available credit's expiry: redeeming one starts a new
+            # weekly window, so the spacing between them decides when each
+            # is worth using (see reset_advice).
+            result["expiries"] = sorted(expiries)
     return result
 
 

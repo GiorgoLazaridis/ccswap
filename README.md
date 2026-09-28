@@ -299,23 +299,41 @@ Subfolders inherit the nearest mapped ancestor. In an unmapped directory, `ccswa
 
 ### Claude Code status line
 
-`ccswap statusline` prints one line for Claude Code's
-[`statusLine`](https://code.claude.com/docs/en/statusline) setting: the active
-Claude account with its 5h/7d (and configured `autoswitch.model`) usage, the
-binding window of every other rotation account with its reset once it is at
-90 % or more, and the same for Codex. It is read-only: Claude values come from
-the cache `ccswap auto` and `ccswap list` maintain (Claude Code's own
-`rate_limits` replace the active account's when present), Codex values from
-the snapshot `ccswap codex auto` writes each tick (marked `stale` after 15
-minutes without a loop). It never fetches usage or refreshes a token, and
-falls back to `ccswap: <error>` instead of failing the prompt.
+`ccswap statusline` prints two lines for Claude Code's
+[`statusLine`](https://code.claude.com/docs/en/statusline) setting:
+
+```text
+🤖 Opus 5.5 | 🧠 400,000 (40%)
+Claude #2 work 5h 31% 7d 7% · #1 7d 100% reset 1d7h │ Codex #2 5h 64% 7d 25% · #1 7d 16% R3!
+```
+
+- **Line 1, the running session:** model and current context size from
+  Claude Code's own session JSON, colored green below 50 %, yellow below
+  80 %, red above.
+- **Line 2, the account pool:** the active Claude account with its 5h/7d
+  (and configured `autoswitch.model`) usage, the binding window of every
+  other rotation account with its reset once it is at 90 % or more, and the
+  same for Codex.
+- **`R3` on a Codex account:** banked rate-limit resets. Redeeming one
+  refreshes the 5h and weekly windows and starts a new week, so resets that
+  expire close together cannot all be used in full. ccswap plans backwards
+  from the expiries so each reset gets a week before the next is due. The
+  color shows how soon the next one must be redeemed: green more than 7
+  days, orange 2 to 7 days, red under 2 days. `!` means redeeming now pays
+  off: the week is at 90 % or more and does not reset within a day, or the
+  reset would otherwise be lost. `ccswap list` shows the expiries and the
+  reason. Claude's own limit resets are not reported by its usage API and
+  are therefore not shown.
+
+It is read-only: Claude values come from the cache `ccswap auto` and
+`ccswap list` maintain (Claude Code's own `rate_limits` replace the active
+account's when present), Codex values from the snapshot `ccswap codex auto`
+writes each tick (marked `stale` after 15 minutes without a loop). It never
+fetches usage or refreshes a token, and falls back to `ccswap: <error>`
+instead of failing the prompt.
 
 ```json
 { "statusLine": { "type": "command", "command": "ccswap statusline" } }
-```
-
-```text
-Claude #2 work 5h 31% 7d 7% · #1 7d 100% reset 1d7h │ Codex #2 5h 64% 7d 25% · #1 7d 16%
 ```
 
 `--no-color` (or `NO_COLOR`) prints plain text. Token and cost history from

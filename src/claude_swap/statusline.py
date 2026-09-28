@@ -26,6 +26,10 @@ from claude_swap.poll_policy import parse_reset_ts
 _GREEN, _YELLOW, _RED, _DIM, _RESET = (
     "\x1b[32m", "\x1b[33m", "\x1b[31m", "\x1b[2m", "\x1b[0m",
 )
+_ORANGE = "\x1b[38;5;208m"
+_URGENCY = {"green": _GREEN, "orange": _ORANGE, "red": _RED}
+# Context colors switch at the same points as ccusage's statusline.
+CONTEXT_WARN_PCT, CONTEXT_HIGH_PCT = 50.0, 80.0
 _SEP = " │ "  # │
 # `ccswap codex auto` refreshes its snapshot every minute; older than this,
 # the loop is not running and the numbers are marked stale.
@@ -150,6 +154,52 @@ def _claude_part(snapshot: AccountsSnapshot, session: dict | None,
     return " · ".join([head, " ".join(others)]) if others else head
 
 
+def _reset_badge(usage: object, now: float, color: bool) -> str:
+    """``R3`` colored by how soon the next banked reset must be redeemed;
+    ``!`` when redeeming now buys real headroom (see reset_advice)."""
+    from claude_swap.reset_advice import advise
+
+    advice = advise(usage, now)
+    if advice is None:
+        return ""
+    text = f"R{advice.count}" + ("!" if advice.worth_now else "")
+    return f"{_URGENCY[advice.urgency]}{text}{_RESET}" if color else text
+
+
+def _session_line(session: dict | None, color: bool) -> str | None:
+    """``🤖 Opus 5.5 | 🧠 400,000 (40%)`` from Claude Code's own session JSON."""
+    if not session:
+        return None
+    model = session.get("model")
+    name = model.get("display_name") if isinstance(model, dict) else None
+    context = session.get("context_window")
+    pct = tokens = None
+    if isinstance(context, dict):
+        pct = _num(context.get("used_percentage"))
+        current = context.get("current_usage")
+        if isinstance(current, dict):
+            counts = [_num(current.get(key)) for key in (
+                "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")]
+            if any(count is not None for count in counts):
+                tokens = sum(count for count in counts if count is not None)
+        size = _num(context.get("context_window_size"))
+        if tokens is None and pct is not None and size:
+            tokens = pct * size / 100
+    segments = []
+    if isinstance(name, str) and name:
+        segments.append(f"\U0001f916 {name}")
+    if tokens is not None or pct is not None:
+        text = f"{tokens:,.0f}" if tokens is not None else ""
+        if pct is not None:
+            text = f"{text} ({pct:.0f}%)" if text else f"{pct:.0f}%"
+            if color:
+                tone = (_GREEN if pct < CONTEXT_WARN_PCT else
+                        _YELLOW if pct < CONTEXT_HIGH_PCT else _RED)
+                text = f"{tone}{text}{_RESET}"
+        segments.append(f"\U0001f9e0 {text}")
+    return " | ".join(segments) or None
+
+
 def _codex_windows(usage: object) -> list[tuple[str, float, float | None]]:
     return [
         ("7d" if label == "Weekly" else label, pct, parse_reset_ts(reset))
@@ -186,6 +236,8 @@ def _codex_part(codex: dict, now: float, color: bool) -> str | None:
             _paint(f"{label} {pct:.0f}%", pct, color) for label, pct, _ in windows
         ) or "usage ?"
         head = f"Codex #{active} {shown}"
+        if badge := _reset_badge(row.get("usage"), now, color):
+            head += f" {badge}"
         if why := note(row):
             head += " " + _dim(f"({why})", color)
         parts.append(head)
@@ -201,6 +253,8 @@ def _codex_part(codex: dict, now: float, color: bool) -> str | None:
             others.append(_dim(f"#{n} {state}", color))
             continue
         text = _reserve(n, _codex_windows(row.get("usage")), now, color)
+        if badge := _reset_badge(row.get("usage"), now, color):
+            text += f" {badge}"
         if why := note(row):
             text += " " + _dim(f"({why})", color)
         others.append(text)
@@ -229,7 +283,10 @@ def render(
     parts = [_claude_part(snapshot, session, models, now, color)]
     if codex and (codex_part := _codex_part(codex, now, color)):
         parts.append(codex_part)
-    return _SEP.join(parts)
+    pool = _SEP.join(parts)
+    # Two lines like claude-hud: the running session first, the account pool below.
+    first = _session_line(session, color)
+    return f"{first}\n{pool}" if first else pool
 
 
 def main(argv: list[str]) -> None:
