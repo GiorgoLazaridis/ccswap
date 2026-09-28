@@ -9,13 +9,13 @@ Daten sind Commit-Daten. Der [Git-Tag `v0.35.1-gl.1`](https://github.com/GiorgoL
 trägt noch die Paketversion `0.35.1`; die Paketversionen mit `+gl.*` beginnen
 bei `0.36.0+gl.1`.
 
-## Unreleased
+## 0.36.0+gl.3 — 2026-09-28
 
 - **Doctor erkennt konkurrierende CLI-Installationen.** `ccswap doctor` und
   `health` warnen, wenn mehrere `PATH`-Verzeichnisse `claude` oder `codex`
   bereitstellen (etwa eine native Installation neben einem npm-Shim unter
   Windows), und nennen sie in Suchreihenfolge. Die erste gewinnt stillschweigend,
-  Updates landen womöglich in der anderen Kopie.
+  Updates landen womöglich in der anderen Kopie. [Commit](https://github.com/GiorgoLazaridis/ccswap/commit/3580dc0f3761a9e1f02abf0854b330e9a0fbeaaf)
 - **Statuszeile für Claude Code.** `ccswap statusline` zeigt das aktive Konto
   mit 5h-/7d- und konfigurierten Modellwerten, die bindenden Fenster der
   übrigen Rotationskonten mit Reset-Countdown sowie Kontext und Kosten aus dem
@@ -24,12 +24,14 @@ bei `0.36.0+gl.1`.
   Konten ohne nutzbare Anmeldung zeigen ihren Zustand statt alter Prozente.
   Fehler erscheinen als kurze Zeile `ccswap: <Fehler>`; `NO_COLOR` oder
   `--no-color` schalten die Farben ab.
+  [Commit](https://github.com/GiorgoLazaridis/ccswap/commit/6ceb5fd53bf9d4db0306619e86273043a7db94b1) · [Review-Korrektur](https://github.com/GiorgoLazaridis/ccswap/commit/45453c356f9fa25694fa5bc245ff738811935e01)
 - **Smart-Start beachtet Modell-Wochenlimits.** `ccswap run --smart` und
   `ccswap plan` werten die Einstellung `autoswitch.model` (zum Beispiel
   `Fable`) nun wie der Auto-Wechsel aus: Ein Konto, dessen konfiguriertes
   Modell sein Wochenlimit erreicht hat, wird übersprungen, und dieses Fenster
   verringert die bewertete Reserve. Meldet ein Konto das Modell nicht, wird
   nichts erfunden; `autoswitch.windows` gilt weiter nur für `ccswap auto`.
+  [Commit](https://github.com/GiorgoLazaridis/ccswap/commit/957faf30f938463da2349d71d52186edcb277283)
 
 ## 0.36.0+gl.2 — 2026-09-28
 

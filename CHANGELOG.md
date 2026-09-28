@@ -9,13 +9,13 @@ The [`v0.35.1-gl.1` Git tag](https://github.com/GiorgoLazaridis/ccswap/tree/v0.3
 still declares package version `0.35.1`; the `+gl.*` package versions begin
 with `0.36.0+gl.1`.
 
-## Unreleased
+## 0.36.0+gl.3 — 2026-09-28
 
 - **Doctor finds competing CLI installs.** `ccswap doctor` and `health` warn
   when more than one `PATH` directory provides `claude` or `codex` (for
   example a native build next to an npm shim on Windows) and list them in
   lookup order, since the first silently wins and updates may land in the
-  other copy.
+  other copy. [Commit](https://github.com/GiorgoLazaridis/ccswap/commit/3580dc0f3761a9e1f02abf0854b330e9a0fbeaaf)
 - **Claude Code status line.** `ccswap statusline` prints the active account
   with its 5h/7d and configured per-model usage, the other rotation accounts'
   binding windows with reset countdowns, and context/cost from Claude Code's
@@ -23,12 +23,14 @@ with `0.36.0+gl.1`.
   refresh, or file write (logging is off). Accounts without usable credentials
   show their state instead of stale percentages. Errors print a short
   `ccswap: <error>` line; `NO_COLOR` or `--no-color` disable ANSI colors.
+  [Commit](https://github.com/GiorgoLazaridis/ccswap/commit/6ceb5fd53bf9d4db0306619e86273043a7db94b1) · [review fix](https://github.com/GiorgoLazaridis/ccswap/commit/45453c356f9fa25694fa5bc245ff738811935e01)
 - **Smart launch honors per-model weekly limits.** `ccswap run --smart` and
   `ccswap plan` now apply the `autoswitch.model` setting (for example
   `Fable`) the same way auto-switch does: an account whose configured model
   is at its weekly limit is skipped, and that window narrows the ranked
   headroom. Models an account does not report are not invented;
   `autoswitch.windows` remains limited to `ccswap auto`.
+  [Commit](https://github.com/GiorgoLazaridis/ccswap/commit/957faf30f938463da2349d71d52186edcb277283)
 
 ## 0.36.0+gl.2 — 2026-09-28
 

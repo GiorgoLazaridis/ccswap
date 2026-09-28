@@ -1,6 +1,6 @@
 # ccswap v2: Stand und weiterer Umbau
 
-Stand: 2026-09-26. Diese Datei beschreibt die Architekturabsicht und den
+Stand: 2026-09-28. Diese Datei beschreibt die Architekturabsicht und den
 tatsächlich implementierten Umfang des Forks. `0.36.0+gl.1` ist der erste
 Ausbauschritt, keine abgeschlossene v2.
 
@@ -58,6 +58,16 @@ in der [README](../README.md).
   Abfrage, wird ein alter letzter Messwert nicht als frischer Schaltwert genutzt.
   Ein übergeordneter Wächter kann diese Ereignisse für Benachrichtigungen und
   Übergaben verwenden, ohne selbst eine zweite Quotenabfrage zu starten.
+
+## Ergänzt in `0.36.0+gl.3`
+
+- Smart Start und `plan` beachten die in `autoswitch.model` konfigurierten
+  Modell-Wochenlimits wie der Auto-Wechsel.
+- `ccswap statusline` zeigt Konto- und Poolzustand in Claude Codes
+  Statuszeile, rein lesend aus dem Cache. Token- und Kostenverläufe bleiben
+  bei [ccusage](https://github.com/ccusage/ccusage); ccswap rechnet sie nicht
+  nach.
+- `doctor` meldet konkurrierende `claude`-/`codex`-Installationen im PATH.
 
 ## Nächste Schritte in sinnvoller Reihenfolge
 
