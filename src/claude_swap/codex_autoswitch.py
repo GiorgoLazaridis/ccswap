@@ -87,6 +87,12 @@ class CodexAutoSwitchEngine:
 
     def _tick(self) -> TickOutcome:
         snapshot = self.switcher.accounts_snapshot(fetch=None)
+        try:
+            # Measurements only; read by `ccswap statusline`. A failed write
+            # must never cost a switching decision.
+            self.switcher.save_usage_snapshot(snapshot)
+        except Exception:  # noqa: BLE001 - display data only
+            pass
         accounts = {account.number: account for account in snapshot.accounts}
         current = snapshot.active_number
         if current is None or current not in accounts:

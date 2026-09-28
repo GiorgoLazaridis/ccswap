@@ -301,20 +301,21 @@ Subfolders inherit the nearest mapped ancestor. In an unmapped directory, `ccswa
 
 `ccswap statusline` prints one line for Claude Code's
 [`statusLine`](https://code.claude.com/docs/en/statusline) setting: the active
-account with its 5h/7d (and configured `autoswitch.model`) usage, the binding
-window of every other rotation account with a reset countdown once it is at
-90 % or more, and the session's context and cost from Claude Code's own JSON.
-It is read-only: it renders the cache that `ccswap auto` and `ccswap list`
-maintain, never fetches usage or refreshes a token, and falls back to
-`ccswap: <error>` instead of failing the prompt. Claude Code's own
-`rate_limits` replace the cached active-account values when present.
+Claude account with its 5h/7d (and configured `autoswitch.model`) usage, the
+binding window of every other rotation account with its reset once it is at
+90 % or more, and the same for Codex. It is read-only: Claude values come from
+the cache `ccswap auto` and `ccswap list` maintain (Claude Code's own
+`rate_limits` replace the active account's when present), Codex values from
+the snapshot `ccswap codex auto` writes each tick (marked `stale` after 15
+minutes without a loop). It never fetches usage or refreshes a token, and
+falls back to `ccswap: <error>` instead of failing the prompt.
 
 ```json
 { "statusLine": { "type": "command", "command": "ccswap statusline" } }
 ```
 
 ```text
-#2 work 5h 9% 7d 3% │ #1 7d 100% ↻1d8h │ ctx 42% $1.23
+Claude #2 work 5h 31% 7d 7% · #1 7d 100% reset 1d7h │ Codex #2 5h 64% 7d 25% · #1 7d 16%
 ```
 
 `--no-color` (or `NO_COLOR`) prints plain text. Token and cost history from
@@ -337,7 +338,7 @@ ccswap codex add
 codex login
 ccswap codex add
 
-ccswap codex list                 # accounts tagged by plan, e.g. [Codex Team]
+ccswap codex list                 # accounts tagged by plan, e.g. [Codex Team], with quota last seen by `codex auto`
 ccswap codex usage                # Quota, credit allowance, and banked resets
 ccswap codex switch 1
 ccswap codex switch                 # rotate to the next saved account

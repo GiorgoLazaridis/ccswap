@@ -123,6 +123,59 @@ def codex_org_label(plan_type: str | None) -> str:
     return known.get(plan_type.lower(), f"Codex {plan_type.replace('_', ' ').title()}")
 
 
+USAGE_SNAPSHOT_FILENAME = "usage_snapshot.json"
+
+
+def _in(reset: object, now: float) -> str:
+    """``in 2h 5m`` / ``in 6d 3h`` until an ISO reset time, or ''."""
+    try:
+        seconds = datetime.fromisoformat(str(reset).replace("Z", "+00:00")).timestamp() - now
+    except ValueError:
+        return ""
+    if seconds <= 0:
+        return ""
+    minutes = int(seconds // 60)
+    days, rest = divmod(minutes, 1440)
+    hours, mins = divmod(rest, 60)
+    return f"in {days}d {hours}h" if days else f"in {hours}h {mins}m" if hours else f"in {mins}m"
+
+
+def _cached_usage_line(snapshot: dict[str, Any] | None, number: str,
+                       now: float | None = None) -> str:
+    """``5h  64% in 2h 12m · 7d  25% in 6d 3h · 1m ago`` from the auto snapshot."""
+    row = (snapshot or {}).get("accounts", {}).get(number)
+    usage = row.get("usage") if isinstance(row, dict) else None
+    if not isinstance(usage, dict):
+        return ""
+    now = time.time() if now is None else now
+    parts = []
+    for key, label in (("five_hour", "5h"), ("weekly", "7d"), ("seven_day", "7d")):
+        window = usage.get(key)
+        pct = window.get("pct") if isinstance(window, dict) else None
+        if isinstance(pct, (int, float)) and not isinstance(pct, bool):
+            left = _in(window.get("resets_at"), now)
+            parts.append(f"{label} {pct:>3.0f}%" + (f" {left}" if left else ""))
+    fetched = row.get("fetchedAt")
+    if parts and isinstance(fetched, (int, float)) and not isinstance(fetched, bool):
+        parts.append(f"{int(max(0.0, now - fetched) // 60)}m ago")
+    return " · ".join(parts)
+
+
+def load_usage_snapshot(backup_root: Path) -> dict[str, Any] | None:
+    """The last quota snapshot written by ``ccswap codex auto``, if readable."""
+    try:
+        data = json.loads(
+            (backup_root / "codex" / USAGE_SNAPSHOT_FILENAME).read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or data.get("schemaVersion") != 1:
+        return None
+    if not isinstance(data.get("accounts"), dict):
+        return None
+    return data
+
+
 class CodexAccountSwitcher:
     """Manage multiple file-backed Codex authentication documents."""
 
@@ -552,6 +605,8 @@ class CodexAccountSwitcher:
     def list_accounts(self, json_output: bool = False) -> dict[str, Any]:
         payload = self.list_payload()
         accounts = payload["accounts"]
+        # Quota as last measured by `ccswap codex auto`; never fetched here.
+        snapshot = None if json_output else load_usage_snapshot(self.backup_dir)
         if json_output:
             print(json.dumps(payload, indent=2))
         elif not accounts:
@@ -565,6 +620,9 @@ class CodexAccountSwitcher:
                 # was recorded.
                 tag = account["label"] if account["planType"] else f"Codex ({account['authMode']})"
                 print(f"{account['number']:>2}  {account['email']}  [{tag}]{marker}")
+                line = _cached_usage_line(snapshot, str(account["number"]))
+                if line:
+                    print(f"    {line}")
         return payload
 
     def usage_status(self, json_output: bool = False) -> dict[str, Any]:
@@ -656,6 +714,32 @@ class CodexAccountSwitcher:
             else:
                 print(f"  usage unavailable: {account['error'] or 'no data returned'}")
         return payload
+
+    def save_usage_snapshot(self, snapshot: AccountsSnapshot) -> None:
+        """Persist the latest quota measurements for read-only consumers.
+
+        Only numbers the usage endpoint returned (percentages, reset times)
+        plus the active slot are written -- no email, token, or account id --
+        so ``ccswap statusline`` can show Codex without a network request.
+        """
+        from claude_swap.settings import atomic_write_json
+
+        accounts = {
+            account.number: {
+                "usage": account.usage.last_good,
+                "fetchedAt": account.usage.fetched_at,
+                "disabled": account.disabled,
+                "kind": account.kind,
+                "usable": account.switchable and account.usage.sentinel is None,
+            }
+            for account in snapshot.accounts
+        }
+        atomic_write_json(self.provider_dir / USAGE_SNAPSHOT_FILENAME, {
+            "schemaVersion": 1,
+            "takenAt": snapshot.taken_at,
+            "active": snapshot.active_number,
+            "accounts": accounts,
+        })
 
     def accounts_snapshot(self, fetch: set[str] | None = None) -> AccountsSnapshot:
         data = self._read_sequence()

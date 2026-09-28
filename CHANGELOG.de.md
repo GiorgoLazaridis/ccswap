@@ -9,6 +9,18 @@ Daten sind Commit-Daten. Der [Git-Tag `v0.35.1-gl.1`](https://github.com/GiorgoL
 trägt noch die Paketversion `0.35.1`; die Paketversionen mit `+gl.*` beginnen
 bei `0.36.0+gl.1`.
 
+## 0.36.0+gl.4 — 2026-09-28
+
+- **Codex in Statuszeile und `ccswap list`.** `ccswap codex auto` schreibt je
+  Durchlauf eine kleine Quoten-Momentaufnahme (Prozente, Resetzeiten, aktives
+  Konto; keine E-Mail, kein Token, keine Konto-ID). `ccswap statusline` zeigt
+  daraus den Codex-Pool neben Claude, als `stale` markiert, wenn die Schleife
+  15 Minuten nichts geschrieben hat; `ccswap list` und `ccswap codex list`
+  zeigen je Codex-Konto 5h/7d mit Reset, ohne eigene Abfrage.
+- **Schlankere Statuszeile.** Kontext und Sitzungskosten entfallen (die Kosten
+  sind nur ein Listenpreis-Gegenwert, den ein Abo nicht bezahlt), und der
+  Reset einer Reserve heißt `reset 1d7h` statt eines Pfeilsymbols.
+
 ## 0.36.0+gl.3 — 2026-09-28
 
 - **Doctor erkennt konkurrierende CLI-Installationen.** `ccswap doctor` und

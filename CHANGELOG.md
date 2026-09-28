@@ -9,6 +9,18 @@ The [`v0.35.1-gl.1` Git tag](https://github.com/GiorgoLazaridis/ccswap/tree/v0.3
 still declares package version `0.35.1`; the `+gl.*` package versions begin
 with `0.36.0+gl.1`.
 
+## 0.36.0+gl.4 — 2026-09-28
+
+- **Codex in the status line and in `ccswap list`.** `ccswap codex auto`
+  now writes a small quota snapshot each tick (percentages, reset times,
+  active slot; no email, token, or account id). `ccswap statusline` shows the
+  Codex pool from it next to Claude, marked `stale` when the loop has not
+  written for 15 minutes, and `ccswap list` / `ccswap codex list` show each
+  Codex account's 5h/7d usage and reset from it without a request.
+- **Leaner status line.** Context and session cost are no longer shown (the
+  cost is a list-price estimate that subscriptions are not billed), and a
+  reserve's reset reads `reset 1d7h` instead of an arrow symbol.
+
 ## 0.36.0+gl.3 — 2026-09-28
 
 - **Doctor finds competing CLI installs.** `ccswap doctor` and `health` warn

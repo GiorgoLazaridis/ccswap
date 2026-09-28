@@ -2,9 +2,10 @@
 
 Strictly read-only: it renders the quota cache that ``ccswap auto``/``list``
 already maintain and never fetches usage, refreshes a token, or writes a
-file. Claude Code pipes a session JSON on stdin; when present, its native
-``rate_limits`` (the running session's own account) and context/cost fields
-are shown next to the pool state that only ccswap knows.
+file. Claude Code pipes a session JSON on stdin; its native ``rate_limits``
+(the running session's own account) replace the cached active-account
+values. Codex quota comes from the snapshot the ``ccswap codex auto`` loop
+writes each tick.
 """
 
 from __future__ import annotations
@@ -26,6 +27,9 @@ _GREEN, _YELLOW, _RED, _DIM, _RESET = (
     "\x1b[32m", "\x1b[33m", "\x1b[31m", "\x1b[2m", "\x1b[0m",
 )
 _SEP = " │ "  # │
+# `ccswap codex auto` refreshes its snapshot every minute; older than this,
+# the loop is not running and the numbers are marked stale.
+CODEX_STALE_S = 15 * 60
 
 
 def read_session(stream: TextIO) -> dict | None:
@@ -96,21 +100,29 @@ def _session_windows(session: dict | None) -> list[tuple[str, float, float | Non
     return windows
 
 
-def render(
-    snapshot: AccountsSnapshot,
-    session: dict | None = None,
-    *,
-    models: Sequence[str] = (),
-    now: float | None = None,
-    color: bool = True,
-) -> str:
-    now = time.time() if now is None else now
+def _reserve(number: str, windows: list[tuple[str, float, float | None]],
+             now: float, color: bool) -> str:
+    """One reserve account: its binding window, plus when it frees up."""
+    if not windows:
+        return f"#{number} ?"
+    label, pct, reset = max(windows, key=lambda w: w[1])
+    text = f"#{number} {label} {pct:.0f}%"
+    if pct >= 90 and (left := _countdown(reset, now)):
+        text += f" reset {left}"
+    return _paint(text, pct, color)
+
+
+def _dim(text: str, color: bool) -> str:
+    return f"{_DIM}{text}{_RESET}" if color else text
+
+
+def _claude_part(snapshot: AccountsSnapshot, session: dict | None,
+                 models: Sequence[str], now: float, color: bool) -> str:
     active = next(
         (a for a in snapshot.accounts if a.number == snapshot.active_number), None
     )
-    parts: list[str] = []
     if active is None:
-        parts.append("ccswap: no active account")
+        head = "Claude: no active account"
     else:
         # Claude Code's own numbers are fresher for the running session;
         # any window it did not send (or only ccswap reports, like per-model
@@ -121,7 +133,7 @@ def render(
         shown = " ".join(
             _paint(f"{label} {pct:.0f}%", pct, color) for label, pct, _ in windows
         ) or (active.usage.sentinel or "usage ?")
-        parts.append(f"{_label(active)} {shown}")
+        head = f"Claude {_label(active)} {shown}"
 
     others = []
     for account in snapshot.accounts:
@@ -131,33 +143,64 @@ def render(
         # take over (missing credentials, dead token, re-login needed).
         if not account.switchable or account.usage.sentinel:
             state = account.usage.sentinel or "no credentials"
-            others.append(f"{_DIM}#{account.number} {state}{_RESET}" if color
-                          else f"#{account.number} {state}")
+            others.append(_dim(f"#{account.number} {state}", color))
             continue
-        windows = _cached_windows(account, models)
-        if not windows:
-            others.append(f"#{account.number} ?")
-            continue
-        label, pct, reset = max(windows, key=lambda w: w[1])
-        text = f"#{account.number} {label} {pct:.0f}%"
-        if pct >= 90 and (left := _countdown(reset, now)):
-            text += f" ↻{left}"  # ↻
-        others.append(_paint(text, pct, color))
-    if others:
-        parts.append(" ".join(others))
+        others.append(_reserve(account.number, _cached_windows(account, models),
+                               now, color))
+    return " · ".join([head, " ".join(others)]) if others else head
 
-    extras = []
-    context = session.get("context_window") if session else None
-    used = _num(context.get("used_percentage")) if isinstance(context, dict) else None
-    if used is not None:
-        extras.append(f"ctx {used:.0f}%")
-    cost = session.get("cost") if session else None
-    usd = _num(cost.get("total_cost_usd")) if isinstance(cost, dict) else None
-    if usd is not None:
-        extras.append(f"${usd:.2f}")
-    if extras:
-        text = " ".join(extras)
-        parts.append(f"{_DIM}{text}{_RESET}" if color else text)
+
+def _codex_windows(usage: object) -> list[tuple[str, float, float | None]]:
+    return [
+        ("7d" if label == "Weekly" else label, pct, parse_reset_ts(reset))
+        for label, pct, reset in relevant_windows(usage if isinstance(usage, dict) else None)
+    ]
+
+
+def _codex_part(codex: dict, now: float, color: bool) -> str | None:
+    """Codex pool from the snapshot ``ccswap codex auto`` keeps current."""
+    accounts = codex.get("accounts") or {}
+    active = codex.get("active")
+    rows = {
+        str(n): row for n, row in accounts.items()
+        if isinstance(row, dict) and not row.get("disabled") and row.get("kind") == "oauth"
+    }
+    if not rows:
+        return None
+    head = "Codex"
+    if isinstance(active, str) and active in rows:
+        windows = _codex_windows(rows[active].get("usage"))
+        shown = " ".join(
+            _paint(f"{label} {pct:.0f}%", pct, color) for label, pct, _ in windows
+        ) or "usage ?"
+        head = f"Codex #{active} {shown}"
+    others = [
+        _reserve(n, _codex_windows(row.get("usage")), now, color)
+        if row.get("usable", True) else _dim(f"#{n} unusable", color)
+        for n, row in sorted(rows.items(), key=lambda item: int(item[0]))
+        if n != active
+    ]
+    part = " · ".join([head, " ".join(others)]) if others else head
+    taken = _num(codex.get("takenAt"))
+    if taken is None or now - taken > CODEX_STALE_S:
+        age = "" if taken is None else f" {int((now - taken) // 60)}m"
+        part += " " + _dim(f"(stale{age})", color)
+    return part
+
+
+def render(
+    snapshot: AccountsSnapshot,
+    session: dict | None = None,
+    *,
+    models: Sequence[str] = (),
+    now: float | None = None,
+    color: bool = True,
+    codex: dict | None = None,
+) -> str:
+    now = time.time() if now is None else now
+    parts = [_claude_part(snapshot, session, models, now, color)]
+    if codex and (codex_part := _codex_part(codex, now, color)):
+        parts.append(codex_part)
     return _SEP.join(parts)
 
 
@@ -181,9 +224,12 @@ def main(argv: list[str]) -> None:
         switcher = ClaudeAccountSwitcher(read_only=True)
         snapshot = switcher.accounts_snapshot(fetch=set())
         models = parse_model_names(load_settings(switcher.backup_dir).model)
+        from claude_swap.codex import load_usage_snapshot
+
         line = render(
             snapshot, session, models=models,
             color=not args.no_color and "NO_COLOR" not in os.environ,
+            codex=load_usage_snapshot(switcher.backup_dir),
         )
     except Exception as exc:  # a status line must never break the prompt
         line = f"ccswap: {type(exc).__name__}"

@@ -41,9 +41,7 @@ def test_active_account_and_exhausted_reserve_with_reset():
              account("2", five=9, weekly=3, active=True, alias="work")),
         now=NOW, color=False,
     )
-    active, reserve = line.split(" │ ")
-    assert active == "#2 work 5h 9% 7d 3%"
-    assert reserve.startswith("#1 7d 100% ↻")
+    assert line.startswith("Claude #2 work 5h 9% 7d 3% · #1 7d 100% reset ")
 
 
 def test_session_rate_limits_override_cache_and_keep_other_windows():
@@ -56,7 +54,8 @@ def test_session_rate_limits_override_cache_and_keep_other_windows():
         snap(account("1", five=10, weekly=20, active=True)), session,
         now=NOW, color=False,
     )
-    assert line == "#1 user1 5h 42% 7d 20% │ ctx 12% $3.46"
+    # Context and cost are deliberately not shown.
+    assert line == "Claude #1 user1 5h 42% 7d 20%"
 
 
 def test_configured_model_limit_is_shown_and_binds_reserve():
@@ -65,7 +64,7 @@ def test_configured_model_limit_is_shown_and_binds_reserve():
              account("2", five=1, weekly=1, scoped=[("Fable", 10)], active=True)),
         models=("Fable",), now=NOW, color=False,
     )
-    assert line == "#2 user2 5h 1% 7d 1% Fable 10% │ #1 Fable 95%"
+    assert line == "Claude #2 user2 5h 1% 7d 1% Fable 10% · #1 Fable 95%"
 
 
 def test_disabled_api_key_and_unknown_accounts():
@@ -76,7 +75,7 @@ def test_disabled_api_key_and_unknown_accounts():
              account("4")),
         now=NOW, color=False,
     )
-    assert line == "#1 user1 5h 1% 7d 1% │ #4 ?"
+    assert line == "Claude #1 user1 5h 1% 7d 1% · #4 ?"
 
 
 def test_color_marks_thresholds():
@@ -87,7 +86,7 @@ def test_color_marks_thresholds():
 
 def test_no_active_account():
     assert statusline.render(snap(account("1", five=1, weekly=1)), now=NOW,
-                             color=False).startswith("ccswap: no active account")
+                             color=False).startswith("Claude: no active account")
 
 
 def test_read_session_ignores_tty_and_bad_json():
@@ -125,7 +124,7 @@ def test_unusable_reserve_is_not_advertised_with_old_percentages():
              account("3", five=5, weekly=5, switchable=False)),
         now=NOW, color=False,
     )
-    assert line == "#1 user1 5h 1% 7d 1% │ #2 token expired #3 no credentials"
+    assert line == "Claude #1 user1 5h 1% 7d 1% · #2 token expired #3 no credentials"
 
 
 def test_failing_snapshot_writes_no_log_and_empty_no_color_disables_color(
@@ -156,3 +155,55 @@ def test_failing_snapshot_writes_no_log_and_empty_no_color_disables_color(
         logging.disable(logging.NOTSET)
     assert written == []
     assert capsys.readouterr().out.strip() == "ccswap: RuntimeError"
+
+
+def codex_snapshot(taken_at=NOW, **rows):
+    return {"schemaVersion": 1, "takenAt": taken_at, "active": "2", "accounts": rows}
+
+
+def codex_row(five, weekly, *, usable=True, disabled=False, kind="oauth"):
+    return {"usage": {"five_hour": {"pct": five}, "weekly": {"pct": weekly}},
+            "fetchedAt": NOW, "disabled": disabled, "kind": kind, "usable": usable}
+
+
+def test_codex_pool_from_auto_snapshot():
+    line = statusline.render(
+        snap(account("1", five=1, weekly=1, active=True)), now=NOW, color=False,
+        codex=codex_snapshot(**{"1": codex_row(0, 16), "2": codex_row(64, 25),
+                                "3": codex_row(0, 0, usable=False),
+                                "4": codex_row(0, 0, disabled=True)}),
+    )
+    assert line == ("Claude #1 user1 5h 1% 7d 1% │ "
+                    "Codex #2 5h 64% 7d 25% · #1 7d 16% #3 unusable")
+
+
+def test_stale_codex_snapshot_is_marked():
+    line = statusline.render(
+        snap(account("1", five=1, weekly=1, active=True)), now=NOW, color=False,
+        codex=codex_snapshot(taken_at=NOW - 20 * 60, **{"2": codex_row(10, 10)}),
+    )
+    assert line.endswith("Codex #2 5h 10% 7d 10% (stale 20m)")
+
+
+def test_codex_snapshot_roundtrip(tmp_path, monkeypatch):
+    from claude_swap import codex
+
+    monkeypatch.setattr(codex, "get_backup_root", lambda: tmp_path)
+    switcher = codex.CodexAccountSwitcher()
+    usage = {"five_hour": {"pct": 5.0}, "weekly": {"pct": 7.0}}
+    snapshot = AccountsSnapshot(
+        active_number="1",
+        accounts=(AccountSnapshot(
+            number="1", email="secret@example.test", org_name="", org_uuid="acct-secret",
+            is_active=True, kind="oauth", switchable=True,
+            usage=UsageEntry(last_good=usage, fetched_at=NOW)),),
+        taken_at=NOW,
+    )
+    switcher.save_usage_snapshot(snapshot)
+    raw = (tmp_path / "codex" / codex.USAGE_SNAPSHOT_FILENAME).read_text(encoding="utf-8")
+    assert "secret" not in raw  # no email or account id
+    loaded = codex.load_usage_snapshot(tmp_path)
+    assert loaded["active"] == "1"
+    assert loaded["accounts"]["1"]["usage"] == usage
+    assert codex._cached_usage_line(loaded, "1", now=NOW) == "5h   5% · 7d   7% · 0m ago"
+    assert codex.load_usage_snapshot(tmp_path / "missing") is None
