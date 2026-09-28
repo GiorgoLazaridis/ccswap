@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
+from dataclasses import replace
 
 from claude_swap.autoswitch import TickOutcome
 from claude_swap.codex_autoswitch import CodexAutoSwitchEngine
@@ -103,6 +105,71 @@ def test_does_not_switch_while_active_account_is_below_threshold(tmp_path):
     assert switcher.switched_to == []
     assert events[-1].kind == "no-switch"
     assert events[-1].reason == "below-threshold"
+
+
+def test_poll_reports_each_codex_window(tmp_path):
+    active = _account("1", 81, active=True)
+    active = replace(
+        active, usage=UsageEntry(last_good={
+            "five_hour": {"pct": 81}, "weekly": {"pct": 22}
+        })
+    )
+    switcher = FakeCodexSwitcher(tmp_path, (active, _account("2", 10)))
+    events = []
+    engine = CodexAutoSwitchEngine(switcher, AutoSwitchSettings(), events.append)
+
+    engine.tick()
+
+    assert events[0].to_json()["windowsPct"]["1"] == {"5h": 81, "7d": 22}
+
+
+def test_stale_last_good_after_fetch_error_is_not_a_switch_trigger(tmp_path):
+    active = replace(
+        _account("1", 95, active=True),
+        usage=UsageEntry(
+            last_good={"five_hour": {"pct": 95}}, last_error="timeout"
+        ),
+    )
+    switcher = FakeCodexSwitcher(tmp_path, (active, _account("2", 10)))
+    events = []
+    engine = CodexAutoSwitchEngine(switcher, AutoSwitchSettings(), events.append)
+
+    assert engine.tick() is TickOutcome.NO_ACTION
+    poll = events[0].to_json()
+    assert poll["headroomPct"]["1"] is None
+    assert poll["fetchErrors"]["1"] == "timeout"
+    assert switcher.switched_to == []
+
+
+def test_codex_loop_rejects_duplicate_and_releases_lock(tmp_path):
+    switcher = FakeCodexSwitcher(tmp_path, (_account("1", 5, active=True),))
+    first = CodexAutoSwitchEngine(switcher, AutoSwitchSettings(), lambda _: None)
+    events = []
+    second = CodexAutoSwitchEngine(switcher, AutoSwitchSettings(), events.append)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def hold_first():
+        entered.set()
+        release.wait(5)
+        first.stop()
+        return TickOutcome.NO_ACTION
+
+    first.tick = hold_first
+    worker = threading.Thread(target=first.run_loop)
+    worker.start()
+    assert entered.wait(5)
+    try:
+        assert second.run_loop() == 1
+        assert events[-1].kind == "error"
+        assert "already running" in events[-1].message
+    finally:
+        release.set()
+        worker.join(5)
+    assert not worker.is_alive()
+
+    second.tick = lambda: (second.stop(), TickOutcome.NO_ACTION)[1]
+    assert second.run_loop() == 0
 
 
 def test_dry_run_reports_a_switch_without_changing_the_active_account(tmp_path):

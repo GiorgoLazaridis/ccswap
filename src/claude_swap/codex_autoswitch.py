@@ -101,7 +101,7 @@ class CodexAutoSwitchEngine:
 
         usage = {
             number: account.usage.last_good
-            if account.usage.sentinel is None
+            if account.usage.sentinel is None and account.usage.last_error is None
             else None
             for number, account in accounts.items()
         }
@@ -115,10 +115,21 @@ class CodexAutoSwitchEngine:
                 active=_ref(current, active.email),
                 headroom=headroom,
                 threshold=self.settings.threshold,
+                windows={
+                    number: {
+                        label: window["pct"]
+                        for key, label in (("five_hour", "5h"), ("weekly", "7d"), ("seven_day", "7d"))
+                        if isinstance((window := value.get(key)), dict)
+                        and isinstance(window.get("pct"), (int, float))
+                        and not isinstance(window["pct"], bool)
+                    }
+                    for number, value in usage.items()
+                    if isinstance(value, dict)
+                },
                 fetch_errors={
                     number: account.usage.last_error
                     for number, account in accounts.items()
-                    if usage[number] is None and account.usage.last_error
+                    if account.usage.last_error
                 },
             )
         )
@@ -245,8 +256,15 @@ class CodexAutoSwitchEngine:
         self._stop.set()
 
     def run_loop(self) -> int:
-        self._stop.clear()
-        while not self._stop.is_set():
-            self.tick()
-            self._stop.wait(self.settings.interval_seconds)
+        lock = FileLock(self.switcher.backup_dir / ".codex_autoswitch_loop.lock")
+        if not lock.acquire(timeout=0):
+            self._emit(ErrorEvent(message="Codex auto is already running"))
+            return 1
+        try:
+            self._stop.clear()
+            while not self._stop.is_set():
+                self.tick()
+                self._stop.wait(self.settings.interval_seconds)
+        finally:
+            lock.release()
         return 0

@@ -2143,6 +2143,36 @@ class TestEventsShape:
 
 
 class TestRunLoop:
+    def test_duplicate_loop_is_rejected(self, harness):
+        from claude_swap.autoswitch import AutoSwitchEngine
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def hold_first():
+            entered.set()
+            release.wait(5)
+            harness.engine.stop()
+            return TickOutcome.NO_ACTION
+
+        with patch.object(harness.engine, "tick", side_effect=hold_first):
+            worker = threading.Thread(target=harness.engine.run_loop)
+            worker.start()
+            assert entered.wait(5)
+            try:
+                events = []
+                duplicate = AutoSwitchEngine(
+                    harness.engine.switcher, harness.engine.settings, events.append,
+                    state_path=harness.engine.state_path,
+                )
+                assert duplicate.run_loop() == 1
+                assert events[-1].kind == "error"
+                assert "already running" in events[-1].message
+            finally:
+                release.set()
+                worker.join(5)
+            assert not worker.is_alive()
+
     def test_loop_ticks_until_stopped(self, harness):
         ticks = []
 

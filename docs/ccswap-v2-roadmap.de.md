@@ -50,6 +50,15 @@ Technische Details und Grenzen stehen in
 [native-session-allocation.md](native-session-allocation.md). Die Befehle stehen
 in der [README](../README.md).
 
+## Ergänzt in `0.36.0+gl.2`
+
+- Pro Anbieter darf nur eine dauerhafte `auto`-Schleife laufen. Ein zweiter
+  Aufruf meldet den Konflikt und beendet sich; `--once` bleibt verfügbar.
+- Codex-Poll-Ereignisse geben 5h- und 7d-Prozent getrennt aus. Scheitert eine
+  Abfrage, wird ein alter letzter Messwert nicht als frischer Schaltwert genutzt.
+  Ein übergeordneter Wächter kann diese Ereignisse für Benachrichtigungen und
+  Übergaben verwenden, ohne selbst eine zweite Quotenabfrage zu starten.
+
 ## Nächste Schritte in sinnvoller Reihenfolge
 
 1. **Start-Race schließen.** Eine kleine, lokale Launch-Reservierung zwischen
