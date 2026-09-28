@@ -44,3 +44,32 @@ def test_doctor_json_marks_corrupt_roster_as_error(tmp_path, monkeypatch, capsys
     assert payload["status"] == "error"
     assert any(check["name"] == "accounts" and check["status"] == "error"
                for check in payload["checks"])
+
+
+def test_doctor_warns_about_competing_cli_installs(tmp_path, monkeypatch):
+    import os
+    import sys
+
+    monkeypatch.setattr(diagnostics, "_cli_check",
+                        lambda name: diagnostics.Check(name, "ok", "1.2.3"))
+    native, npm, other = tmp_path / "native", tmp_path / "npm", tmp_path / "other"
+    for folder in (native, npm, other):
+        folder.mkdir()
+    windows = sys.platform == "win32"
+    for path in (native / ("claude.exe" if windows else "claude"),
+                 npm / ("claude.cmd" if windows else "claude"),
+                 other / ("codex.exe" if windows else "codex"),
+                 # a PowerShell shim alone is not a PATHEXT hit
+                 other / "claude.ps1"):
+        path.write_text("", encoding="utf-8")
+        path.chmod(0o755)
+    env = {"PATH": os.pathsep.join([str(native), str(npm), str(native), str(other)]),
+           "PATHEXT": ".COM;.EXE;.BAT;.CMD"}
+
+    checks = {c.name: c for c in diagnostics.diagnose(tmp_path / "store", env=env)}
+
+    installs = checks["claude installs"]
+    assert installs.status == "warning"
+    assert installs.detail.startswith("2 on PATH, first wins: ")
+    assert installs.detail.index("native") < installs.detail.index("npm")
+    assert "codex installs" not in checks

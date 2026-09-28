@@ -59,6 +59,39 @@ def _cli_check(name: str) -> Check:
     return Check(name, "ok", match.group(0))
 
 
+def _install_dirs(name: str, env: dict[str, str]) -> list[str]:
+    """Distinct PATH directories that provide ``name``, in lookup order.
+
+    A native install next to an npm shim (common on Windows: ``claude.exe``
+    in ``~/.local/bin`` and ``claude.cmd`` under the Node prefix) means the
+    first PATH entry silently wins and updates may land in the other copy.
+    """
+    windows = sys.platform == "win32"
+    exts = [""]
+    if windows:
+        exts = [e.lower() for e in env.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";") if e]
+    found: list[str] = []
+    seen: set[str] = set()
+    for entry in env.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        folder = os.path.normcase(os.path.abspath(entry.strip('"')))
+        if folder in seen:
+            continue
+        seen.add(folder)
+        for ext in exts:
+            candidate = os.path.join(folder, name + ext)
+            if os.path.isfile(candidate) and (windows or os.access(candidate, os.X_OK)):
+                found.append(folder)
+                break
+    return found
+
+
+def _display_dir(folder: str) -> str:
+    home = os.path.normcase(os.path.expanduser("~"))
+    return "~" + folder[len(home):] if folder.startswith(home) else folder
+
+
 def _json_file(path: Path) -> tuple[dict | None, str | None]:
     if not path.exists():
         return None, "missing"
@@ -76,6 +109,14 @@ def diagnose(backup_root: Path, *, env: dict[str, str] | None = None) -> list[Ch
     env = dict(os.environ) if env is None else env
     checks = [Check("ccswap", "ok", __version__),
               _cli_check("claude"), _cli_check("codex")]
+    for name in ("claude", "codex"):
+        dirs = _install_dirs(name, env)
+        if len(dirs) > 1:
+            checks.append(Check(
+                f"{name} installs", "warning",
+                f"{len(dirs)} on PATH, first wins: "
+                + ", ".join(_display_dir(d) for d in dirs),
+            ))
 
     roster, roster_error = _json_file(backup_root / "sequence.json")
     identities: dict[str, tuple[str, str]] = {}

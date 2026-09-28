@@ -11,6 +11,11 @@ bei `0.36.0+gl.1`.
 
 ## Unreleased
 
+- **Doctor erkennt konkurrierende CLI-Installationen.** `ccswap doctor` und
+  `health` warnen, wenn mehrere `PATH`-Verzeichnisse `claude` oder `codex`
+  bereitstellen (etwa eine native Installation neben einem npm-Shim unter
+  Windows), und nennen sie in Suchreihenfolge. Die erste gewinnt stillschweigend,
+  Updates landen womöglich in der anderen Kopie.
 - **Statuszeile für Claude Code.** `ccswap statusline` zeigt das aktive Konto
   mit 5h-/7d- und konfigurierten Modellwerten, die bindenden Fenster der
   übrigen Rotationskonten mit Reset-Countdown sowie Kontext und Kosten aus dem

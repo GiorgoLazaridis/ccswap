@@ -252,7 +252,8 @@ start a window. It is unavailable when the reset data cannot support it.
 
 ### Native setup diagnostics
 
-`ccswap doctor` checks installed native CLI versions, local roster/settings,
+`ccswap doctor` checks installed native CLI versions, competing `claude`/`codex`
+installs on `PATH` (for example a native build next to an npm shim), local roster/settings,
 quota cache freshness and environment endpoint overrides. `ccswap health`
 prints the same checks compactly; both support `--json`. `doctor --compliance`
 adds links to provider terms and states the limit of its automated checks.
