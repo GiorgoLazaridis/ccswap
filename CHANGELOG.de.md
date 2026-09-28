@@ -21,9 +21,11 @@ bei `0.36.0+gl.1`.
   gekennzeichnet statt als aktuell gezeigt, und jede Kontoänderung (Wechsel,
   Hinzufügen, Entfernen, Aktivieren/Deaktivieren) verwirft die Momentaufnahme
   bis zum nächsten Durchlauf.
+  [Commit](https://github.com/GiorgoLazaridis/ccswap/commit/2149e19a6bfd55ee677b404348eaa421c34d3ae3) · [Review-Korrektur](https://github.com/GiorgoLazaridis/ccswap/commit/2bb36a4d81c586667f7fbd1d5574920b8be74fda)
 - **Schlankere Statuszeile.** Kontext und Sitzungskosten entfallen (die Kosten
   sind nur ein Listenpreis-Gegenwert, den ein Abo nicht bezahlt), und der
   Reset einer Reserve heißt `reset 1d7h` statt eines Pfeilsymbols.
+  [Commit](https://github.com/GiorgoLazaridis/ccswap/commit/2149e19a6bfd55ee677b404348eaa421c34d3ae3)
 
 ## 0.36.0+gl.3 — 2026-09-28
 

@@ -69,6 +69,13 @@ in der [README](../README.md).
   nach.
 - `doctor` meldet konkurrierende `claude`-/`codex`-Installationen im PATH.
 
+## Ergänzt in `0.36.0+gl.4`
+
+- `ccswap codex auto` schreibt je Durchlauf eine Quoten-Momentaufnahme ohne
+  Identitätsdaten. Statuszeile und `list` zeigen daraus Codex; alte oder
+  fehlgeschlagene Messungen sind gekennzeichnet, Kontoänderungen verwerfen
+  die Aufnahme.
+
 ## Nächste Schritte in sinnvoller Reihenfolge
 
 1. **Start-Race schließen.** Eine kleine, lokale Launch-Reservierung zwischen

@@ -20,9 +20,11 @@ with `0.36.0+gl.1`.
   whose last fetch failed or whose measurement is older than 15 minutes are
   flagged instead of shown as current, and any roster change (switch, add,
   remove, enable/disable) discards the snapshot until the next tick.
+  [Commit](https://github.com/GiorgoLazaridis/ccswap/commit/2149e19a6bfd55ee677b404348eaa421c34d3ae3) · [review fix](https://github.com/GiorgoLazaridis/ccswap/commit/2bb36a4d81c586667f7fbd1d5574920b8be74fda)
 - **Leaner status line.** Context and session cost are no longer shown (the
   cost is a list-price estimate that subscriptions are not billed), and a
   reserve's reset reads `reset 1d7h` instead of an arrow symbol.
+  [Commit](https://github.com/GiorgoLazaridis/ccswap/commit/2149e19a6bfd55ee677b404348eaa421c34d3ae3)
 
 ## 0.36.0+gl.3 — 2026-09-28
 
