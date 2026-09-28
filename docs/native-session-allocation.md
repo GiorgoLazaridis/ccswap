@@ -13,8 +13,11 @@ records. It excludes the active default login because a second credential copy
 could diverge during token rotation. It also excludes API-key accounts, missing
 credentials, disabled accounts without a hard project mapping, unknown or
 decision-untrusted 5h/7d usage, exhausted windows, and unreadable process
-records. A broken hard mapping fails explicitly. Within ten percentage points
-of the best binding 5h/7d headroom, fewer live sessions win; fresher trusted
+records. Per-model weekly windows named in `autoswitch.model` (for example
+`Fable`) bind exactly as in auto-switch: a maxed model excludes the account
+and a partly used one lowers its headroom. A broken hard mapping fails
+explicitly. Within ten percentage points
+of the best binding headroom, fewer live sessions win; fresher trusted
 measurements break ties ahead of session count. The preview explains every
 eligible or skipped candidate. `--dry-run` and ordinary `plan` read the cache
 without refreshing tokens or modifying credentials. `plan --refresh` and a real

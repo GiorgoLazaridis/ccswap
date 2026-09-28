@@ -6,10 +6,12 @@ changes the default login, refreshes a token, or starts a provider process.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from claude_swap.models import AccountSnapshot, AccountsSnapshot
+from claude_swap.oauth import relevant_windows
 from claude_swap.poll_policy import parse_reset_ts
 from claude_swap.session import scan_live_sessions, session_dir_for
 from claude_swap.usage_store import STALE_OK_S
@@ -28,12 +30,19 @@ class Candidate:
     skipped: str | None = None
     mapped: bool = False
     stale: bool = False
+    # Configured per-model weekly windows (``autoswitch.model``), e.g.
+    # ``(("Fable", 42.0),)``. Empty when no model is configured or the
+    # account reports none of them.
+    scoped_used: tuple[tuple[str, float], ...] = ()
 
     @property
     def headroom(self) -> float:
         assert self.five_hour_used is not None
         assert self.weekly_used is not None
-        return 100.0 - max(self.five_hour_used, self.weekly_used)
+        return 100.0 - max(
+            self.five_hour_used, self.weekly_used,
+            *(pct for _, pct in self.scoped_used),
+        )
 
 
 @dataclass(frozen=True)
@@ -70,6 +79,7 @@ def _candidate(
     active_number: str | None,
     backup_dir: Path,
     mapped: bool,
+    models: Sequence[str] = (),
 ) -> Candidate:
     reasons: list[str] = []
     skipped: str | None = None
@@ -77,6 +87,15 @@ def _candidate(
     value = account.usage.decision_value()
     five = _window_pct(value, "five_hour") if isinstance(value, dict) else None
     weekly = _window_pct(value, "seven_day") if isinstance(value, dict) else None
+    # Same window source as auto-switch: only the models the user configured
+    # bind, and a model the account does not report is not invented.
+    scoped = tuple(
+        (label, pct)
+        for label, pct, _ in relevant_windows(value, models)
+        if label not in ("5h", "7d", "Weekly")
+        and _percentage(pct) is not None
+    ) if models and isinstance(value, dict) else ()
+    exhausted_scoped = [label for label, pct in scoped if pct >= 100.0]
     age = account.usage.age_s
 
     if account.number == active_number:
@@ -91,6 +110,8 @@ def _candidate(
         skipped = "5h/7d usage unknown or no longer decision-trusted"
     elif max(five, weekly) >= 100.0:
         skipped = "quota window exhausted"
+    elif exhausted_scoped:
+        skipped = f"{'/'.join(exhausted_scoped)} weekly limit exhausted"
 
     if skipped is None:
         session_dir = session_dir_for(backup_dir, account.number, account.email)
@@ -101,6 +122,8 @@ def _candidate(
             sessions = len(live)
             reasons.append(f"5h headroom {100.0 - five:.0f}%")
             reasons.append(f"7d headroom {100.0 - weekly:.0f}%")
+            for label, pct in scoped:
+                reasons.append(f"{label} headroom {100.0 - pct:.0f}%")
             reasons.append(f"{sessions} active sessions")
             reasons.append(f"quota snapshot {age:.0f}s old")
             if age > STALE_OK_S:
@@ -120,6 +143,7 @@ def _candidate(
         skipped=skipped,
         mapped=mapped,
         stale=age is not None and age > STALE_OK_S,
+        scoped_used=scoped,
     )
 
 
@@ -129,10 +153,14 @@ def allocate(
     backup_dir: Path,
     mapped_account: str | None = None,
     missing_mapping: str | None = None,
+    models: Sequence[str] = (),
 ) -> AllocationPlan:
     """Rank eligible profiles from one coherent snapshot, without side effects.
 
-    Headroom is the binding 5h/7d minimum. Among accounts within ten
+    Headroom is the binding 5h/7d minimum, plus any per-model weekly window
+    named in ``models`` (the ``autoswitch.model`` setting, e.g. "Fable"):
+    an account whose configured model is maxed cannot serve that work even
+    with 5h/7d headroom, exactly as auto-switch treats it. Among accounts within ten
     percentage points of the best, prefer fewer sessions. Ten points is a
     deliberately coarse similarity band, matching the auto-switch default
     hysteresis rather than pretending that one point predicts session cost.
@@ -143,6 +171,7 @@ def allocate(
             active_number=snapshot.active_number,
             backup_dir=backup_dir,
             mapped=account.number == mapped_account,
+            models=models,
         )
         for account in snapshot.accounts
     )

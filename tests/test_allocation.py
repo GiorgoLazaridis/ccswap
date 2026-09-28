@@ -208,3 +208,63 @@ def test_plan_json_preserves_error_envelope(monkeypatch, capsys):
         cli._plan_command(["--json"])
     assert exc.value.code == 1
     assert json.loads(capsys.readouterr().out)["error"]["type"] == "ConfigError"
+
+
+def with_scoped(snapshot: AccountSnapshot, *windows: tuple[str, float]) -> AccountSnapshot:
+    usage = dict(snapshot.usage.last_good)
+    usage["scoped"] = [{"name": name, "pct": pct, "resets_at": None}
+                       for name, pct in windows]
+    return replace(snapshot, usage=UsageEntry(last_good=usage, age_s=snapshot.usage.age_s))
+
+
+def scoped_plan(tmp_path, monkeypatch, accounts, models):
+    monkeypatch.setattr(allocation, "scan_live_sessions", lambda path: ([], []))
+    return allocation.allocate(
+        AccountsSnapshot(active_number=None, accounts=tuple(accounts), taken_at=100),
+        backup_dir=tmp_path, models=models,
+    )
+
+
+def test_configured_model_limit_binds_like_auto_switch(tmp_path, monkeypatch):
+    # Account 2 has the most 5h/7d room, but its Fable week is spent.
+    accounts = [with_scoped(account("1", 40, 40), ("Fable", 50)),
+                with_scoped(account("2", 5, 5), ("Fable", 100))]
+
+    unscoped = scoped_plan(tmp_path, monkeypatch, accounts, ())
+    assert unscoped.selected == "2"
+    assert unscoped.candidates[1].scoped_used == ()
+
+    scoped = scoped_plan(tmp_path, monkeypatch, accounts, ("fable",))
+    assert scoped.selected == "1"
+    assert scoped.candidates[1].skipped == "Fable weekly limit exhausted"
+    assert "Fable headroom 50%" in scoped.candidates[0].reasons
+
+
+def test_configured_model_limit_narrows_headroom_rank(tmp_path, monkeypatch):
+    accounts = [with_scoped(account("1", 10, 10), ("Fable", 85)),
+                with_scoped(account("2", 30, 30), ("Fable", 20))]
+    result = scoped_plan(tmp_path, monkeypatch, accounts, ("all",))
+    assert result.candidates[0].headroom == 15
+    assert result.selected == "2"
+
+
+def test_model_the_account_does_not_report_is_not_invented(tmp_path, monkeypatch):
+    result = scoped_plan(tmp_path, monkeypatch, [account("1", 10, 10)], ("Fable",))
+    assert result.selected == "1"
+    assert result.candidates[0].scoped_used == ()
+
+
+def test_native_session_plan_passes_autoswitch_model(monkeypatch, tmp_path):
+    from claude_swap.settings import set_setting
+
+    set_setting(tmp_path, "autoswitch.model", "Fable")
+    switcher = MagicMock()
+    switcher.backup_dir = tmp_path
+    switcher.slot_for_directory.return_value = (None, None)
+    seen = {}
+    monkeypatch.setattr(
+        allocation, "allocate",
+        lambda snapshot, **kw: seen.update(kw) or allocation.AllocationPlan(None, (), None, "x"),
+    )
+    cli._native_session_plan(switcher, refresh=False)
+    assert seen["models"] == ("Fable",)

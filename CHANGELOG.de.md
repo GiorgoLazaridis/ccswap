@@ -9,6 +9,15 @@ Daten sind Commit-Daten. Der [Git-Tag `v0.35.1-gl.1`](https://github.com/GiorgoL
 trägt noch die Paketversion `0.35.1`; die Paketversionen mit `+gl.*` beginnen
 bei `0.36.0+gl.1`.
 
+## Unreleased
+
+- **Smart-Start beachtet Modell-Wochenlimits.** `ccswap run --smart` und
+  `ccswap plan` werten die Einstellung `autoswitch.model` (zum Beispiel
+  `Fable`) nun wie der Auto-Wechsel aus: Ein Konto, dessen konfiguriertes
+  Modell sein Wochenlimit erreicht hat, wird übersprungen, und dieses Fenster
+  verringert die bewertete Reserve. Meldet ein Konto das Modell nicht, wird
+  nichts erfunden; `autoswitch.windows` gilt weiter nur für `ccswap auto`.
+
 ## 0.36.0+gl.2 — 2026-09-28
 
 - **Dokumentation des Forks.** Die README kennzeichnet diesen Git-Fork,

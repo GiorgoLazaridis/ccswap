@@ -274,6 +274,7 @@ Examples:
 def _native_session_plan(switcher: ClaudeAccountSwitcher, *, refresh: bool):
     """Use the existing quota collector, never the auto-switch engine."""
     from claude_swap.allocation import allocate
+    from claude_swap.settings import load_settings, parse_model_names
 
     slot, missing = switcher.slot_for_directory(os.getcwd())
     snapshot = switcher.accounts_snapshot(fetch=None if refresh else set())
@@ -282,6 +283,9 @@ def _native_session_plan(switcher: ClaudeAccountSwitcher, *, refresh: bool):
         backup_dir=switcher.backup_dir,
         mapped_account=slot,
         missing_mapping=missing if slot is None else None,
+        # The per-model weekly limits auto-switch already honors bind a new
+        # session too; account-wide ``autoswitch.windows`` stays auto-only.
+        models=parse_model_names(load_settings(switcher.backup_dir).model),
     )
 
 

@@ -9,6 +9,15 @@ The [`v0.35.1-gl.1` Git tag](https://github.com/GiorgoLazaridis/ccswap/tree/v0.3
 still declares package version `0.35.1`; the `+gl.*` package versions begin
 with `0.36.0+gl.1`.
 
+## Unreleased
+
+- **Smart launch honors per-model weekly limits.** `ccswap run --smart` and
+  `ccswap plan` now apply the `autoswitch.model` setting (for example
+  `Fable`) the same way auto-switch does: an account whose configured model
+  is at its weekly limit is skipped, and that window narrows the ranked
+  headroom. Models an account does not report are not invented;
+  `autoswitch.windows` remains limited to `ccswap auto`.
+
 ## 0.36.0+gl.2 — 2026-09-28
 
 - **Fork documentation.** The README now identifies this Git fork, links this
