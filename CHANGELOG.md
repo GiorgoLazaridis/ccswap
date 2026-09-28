@@ -18,8 +18,9 @@ with `0.36.0+gl.1`.
   flags when redeeming now pays off (week ≥ 90 % and not resetting within a
   day, or the reset would be lost). `ccswap list` shows expiries and the
   recommendation; the status line shows `R<count>` in that color, with `!`
-  when it is worth redeeming now. Claude's limit resets are not in its usage
-  API and are not shown.
+  when it is worth redeeming now and `?` when an expiry is unknown (never
+  shown as safe). Advice from a failed or old measurement is withheld.
+  Claude's limit resets are not in its usage API and are not shown.
 - **Two-line status line.** A first line shows the model and current context
   size from Claude Code's session JSON (green < 50 %, yellow < 80 %, red);
   the account pool moves to the second line. The layout and context colors

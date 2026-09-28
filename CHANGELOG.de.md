@@ -18,7 +18,9 @@ bei `0.36.0+gl.1`.
   2–7, rot < 2) und markiert, wann sich das Einlösen jetzt lohnt (Woche ≥ 90 %
   und kein Wochenreset innerhalb eines Tages, oder der Reset ginge sonst
   verloren). `ccswap list` zeigt Ablaufdaten und Empfehlung, die Statuszeile
-  `R<Anzahl>` in dieser Farbe, mit `!`, wenn sich das Einlösen jetzt lohnt.
+  `R<Anzahl>` in dieser Farbe, mit `!`, wenn sich das Einlösen jetzt lohnt,
+  und `?`, wenn ein Ablaufdatum unbekannt ist (nie als sicher gezeigt). Aus
+  einer fehlgeschlagenen oder alten Messung gibt es keine Empfehlung.
   Claude-Resets stehen nicht in dessen Nutzungs-API und werden nicht gezeigt.
 - **Zweizeilige Statuszeile.** Eine erste Zeile zeigt Modell und aktuelle
   Kontextgröße aus dem Session-JSON von Claude Code (grün < 50 %, gelb < 80 %,

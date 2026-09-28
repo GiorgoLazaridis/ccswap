@@ -146,8 +146,9 @@ def _cached_reset_line(snapshot: dict[str, Any] | None, number: str,
     from claude_swap.reset_advice import advise
 
     row = (snapshot or {}).get("accounts", {}).get(number)
+    row = row if isinstance(row, dict) else {}
     now = time.time() if now is None else now
-    advice = advise(row.get("usage") if isinstance(row, dict) else None, now)
+    advice = advise(row.get("usage"), now)
     if advice is None:
         return ""
 
@@ -157,6 +158,13 @@ def _cached_reset_line(snapshot: dict[str, Any] | None, number: str,
     parts = [f"Resets {advice.count}"]
     if advice.expiries:
         parts.append("expire " + ", ".join(when(t) for t in advice.expiries))
+    fetched = row.get("fetchedAt")
+    age = now - fetched if isinstance(fetched, (int, float)) and not isinstance(fetched, bool) else None
+    if row.get("error") or age is None or age > 15 * 60:
+        # A failed or old measurement may predate a redemption: no call to action.
+        state = "last fetch failed" if row.get("error") else "measurement is old"
+        parts.append(f"{state}; advice withheld")
+        return " · ".join(parts)
     if advice.worth_now:
         parts.append(f"redeem one now ({advice.reason})")
     elif advice.deadline is not None:

@@ -30,7 +30,7 @@ class ResetAdvice:
     count: int
     expiries: tuple[float, ...]
     deadline: float | None      # latest sensible redemption of the next reset
-    urgency: str                # "green" | "orange" | "red"
+    urgency: str                # "green" | "orange" | "red" | "unknown"
     worth_now: bool
     reason: str
 
@@ -80,12 +80,17 @@ def advise(usage: object, now: float) -> ResetAdvice | None:
     plan = deadlines(list(expiries))
     deadline = plan[0] if plan else None
     left = None if deadline is None else deadline - now
-    if left is None or left > SOON_S:
+    if left is None:
+        urgency = "unknown"
+    elif left > SOON_S:
         urgency = "green"
     elif left > URGENT_S:
         urgency = "orange"
     else:
         urgency = "red"
+    # A reset without a known expiry may run out at any time: never call it safe.
+    if len(expiries) < count and urgency in ("green", "orange"):
+        urgency = "unknown"
 
     weekly = usage.get("weekly") or usage.get("seven_day")
     pct = weekly.get("pct") if isinstance(weekly, dict) else None
@@ -101,6 +106,8 @@ def advise(usage: object, now: float) -> ResetAdvice | None:
         worth, reason = True, f"weekly {pct:.0f}% used"
     elif blocked:
         worth, reason = False, "weekly resets within a day anyway"
+    elif urgency == "unknown":
+        worth, reason = False, "expiry dates unknown; check the ChatGPT usage page"
     elif left is not None and left <= SOON_S:
         worth, reason = False, "use it this week, ideally once the weekly limit is near"
     else:

@@ -321,8 +321,9 @@ Claude #2 work 5h 31% 7d 7% · #1 7d 100% reset 1d7h │ Codex #2 5h 64% 7d 25% 
   color shows how soon the next one must be redeemed: green more than 7
   days, orange 2 to 7 days, red under 2 days. `!` means redeeming now pays
   off: the week is at 90 % or more and does not reset within a day, or the
-  reset would otherwise be lost. `ccswap list` shows the expiries and the
-  reason. Claude's own limit resets are not reported by its usage API and
+  reset would otherwise be lost; `?` means an expiry is unknown, which is
+  never shown as safe. `ccswap list` shows the expiries and the reason, and
+  withholds the advice when the last measurement failed or is old. Claude's own limit resets are not reported by its usage API and
   are therefore not shown.
 
 It is read-only: Claude values come from the cache `ccswap auto` and

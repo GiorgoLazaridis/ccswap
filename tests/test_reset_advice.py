@@ -65,7 +65,19 @@ def test_count_only_and_invalid_payloads():
     assert advise({"reset_credits": {"available": True}}, NOW) is None
     assert advise(None, NOW) is None
     only_count = advise({"reset_credits": {"available": 2}}, NOW)
-    assert (only_count.count, only_count.deadline, only_count.urgency) == (2, None, "green")
+    assert (only_count.count, only_count.deadline, only_count.urgency) == (2, None, "unknown")
+
+
+def test_missing_expiries_are_never_called_safe():
+    partial = usage(25)
+    partial["reset_credits"]["available"] = 2  # one expiry unknown
+    advice = advise(partial, NOW)
+    assert advice.urgency == "unknown"
+    assert advice.reason == "expiry dates unknown; check the ChatGPT usage page"
+    # a known red deadline still wins
+    red = usage(1)
+    red["reset_credits"]["available"] = 2
+    assert advise(red, NOW).urgency == "red"
 
 
 def test_earliest_expiry_fallback_without_detail_list():
@@ -76,11 +88,22 @@ def test_earliest_expiry_fallback_without_detail_list():
 def test_list_line_and_statusline_badge():
     from claude_swap import codex, statusline
 
-    snapshot = {"accounts": {"1": {"usage": usage(6, 7)}}}
+    snapshot = {"accounts": {"1": {"usage": usage(6, 7), "fetchedAt": NOW - 60}}}
     line = codex._cached_reset_line(snapshot, "1", now=NOW)
     assert line.startswith("Resets 2 · expire ")
     assert line.endswith("redeem one now (later resets need the week after it)")
     assert statusline._reset_badge(usage(6, 7), NOW, color=False) == "R2!"
     assert statusline._reset_badge(usage(25), NOW, color=False) == "R1"
     assert statusline._reset_badge(usage(25), NOW, color=True) == f"{statusline._GREEN}R1{statusline._RESET}"
+    unknown = {"reset_credits": {"available": 2}}
+    assert statusline._reset_badge(unknown, NOW, color=True) == "R2?"
+
+
+def test_list_withholds_advice_from_failed_or_old_measurements():
+    from claude_swap import codex
+
+    failed = {"accounts": {"1": {"usage": usage(6, 7), "fetchedAt": NOW, "error": True}}}
+    old = {"accounts": {"1": {"usage": usage(6, 7), "fetchedAt": NOW - 3600}}}
+    assert codex._cached_reset_line(failed, "1", now=NOW).endswith("last fetch failed; advice withheld")
+    assert codex._cached_reset_line(old, "1", now=NOW).endswith("measurement is old; advice withheld")
     assert reset_advice.SOON_S == 7 * DAY_S

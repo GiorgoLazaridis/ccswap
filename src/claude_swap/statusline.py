@@ -163,6 +163,8 @@ def _reset_badge(usage: object, now: float, color: bool) -> str:
     if advice is None:
         return ""
     text = f"R{advice.count}" + ("!" if advice.worth_now else "")
+    if advice.urgency == "unknown":
+        return text + "?"
     return f"{_URGENCY[advice.urgency]}{text}{_RESET}" if color else text
 
 
