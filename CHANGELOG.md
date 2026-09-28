@@ -14,7 +14,8 @@ with `0.36.0+gl.1`.
 - **Fork documentation.** The README now identifies this Git fork, links this
   bilingual history, and distinguishes the upstream PyPI package. Package
   metadata points to the fork's repository, issues, and changelog. Repository
-  instructions and CI require both languages for future source changes.
+  instructions and CI require both languages for future source changes; the
+  CI workflow can also be started manually for verification.
 - **One continuous auto loop per provider.** A second `ccswap auto` or
   `ccswap codex auto` exits with an error instead of polling and switching in
   parallel. The one-shot `--once` commands remain available. [Commit](https://github.com/GiorgoLazaridis/ccswap/commit/23ea59dd39e3151b62c814f6e132eb8d5de699d4)

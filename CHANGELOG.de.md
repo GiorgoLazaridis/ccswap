@@ -14,7 +14,8 @@ bei `0.36.0+gl.1`.
 - **Dokumentation des Forks.** Die README kennzeichnet diesen Git-Fork,
   verlinkt den zweisprachigen Verlauf und unterscheidet das Upstream-PyPI-Paket.
   Paketmetadaten verweisen auf Repository, Issues und Changelog des Forks.
-  Repo-Regeln und CI verlangen künftig beide Sprachen bei Codeänderungen.
+  Repo-Regeln und CI verlangen künftig beide Sprachen bei Codeänderungen. Der
+  CI-Workflow lässt sich auch manuell zur Prüfung starten.
 - **Nur eine dauerhafte Auto-Schleife je Anbieter.** Ein zweiter Aufruf von
   `ccswap auto` oder `ccswap codex auto` endet mit Fehler statt parallel zu
   pollen und zu wechseln. Einmalige Aufrufe mit `--once` bleiben möglich.
