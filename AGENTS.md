@@ -19,3 +19,14 @@ Keep the fork notice and links in `README.md` visible and working. When the
 version changes, update both changelogs, the README's fork description if
 needed, and the package's changelog URL. Check links and Git history before
 publishing.
+
+## Tests on Windows
+
+`uv run pytest` distributes over pytest-xdist workers. On some Windows
+machines every worker dies during startup with an `INTERNALERROR` (seen as
+`'bytes' object has no attribute 'co_filename'` or
+`module '__main__' has no attribute '__file__'`): there, any CPython started
+with `python -c` breaks imports once an audit hook is installed, and the
+test suite's real-store guard is one. GitHub's Windows runners are not
+affected. Run the suite in one process instead:
+`$env:PYTHONDONTWRITEBYTECODE=1; uv run pytest -n0 -p no:cacheprovider --basetemp=<temp dir>`.
