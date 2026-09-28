@@ -1,6 +1,14 @@
 # ccswap (Claude Codex Swap)
 
-[![CI](https://github.com/errhythm/ccswap/actions/workflows/ci.yml/badge.svg)](https://github.com/errhythm/ccswap/actions/workflows/ci.yml)
+> **Giorgo's fork of [errhythm/ccswap](https://github.com/errhythm/ccswap).**
+> This repository adds Windows fixes, native Claude session allocation, local
+> diagnostics, and safer auto-switch monitoring. See the [fork changelog
+> (English)](CHANGELOG.md) or [Änderungsverlauf (Deutsch)](CHANGELOG.de.md)
+> for the changes since the shared upstream commit. The PyPI badges and
+> `uv tool install ccswap` below refer to the **upstream package**; install this
+> fork with the Git command in [Installation](#installation).
+
+[![Fork CI](https://github.com/GiorgoLazaridis/ccswap/actions/workflows/ci.yml/badge.svg)](https://github.com/GiorgoLazaridis/ccswap/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/ccswap.svg)](https://pypi.org/project/ccswap/)
 [![Python versions](https://img.shields.io/pypi/pyversions/ccswap.svg)](https://pypi.org/project/ccswap/)
 [![Downloads](https://img.shields.io/pypi/dm/ccswap.svg)](https://pypi.org/project/ccswap/)
@@ -40,6 +48,7 @@ Codex accounts work the same way: run `codex login`, then `ccswap codex add`.
 
 ## Contents
 
+- [Fork changelog (English / Deutsch)](#fork-changelog)
 - [Installation](#installation)
 - [Usage](#usage)
 - [Restarts and session behavior](#restarts-and-session-behavior)
@@ -50,6 +59,13 @@ Codex accounts work the same way: run `codex login`, then `ccswap codex add`.
 - [Uninstall](#uninstall)
 - [Requirements](#requirements)
 - [License and credits](#license-and-credits)
+
+## Fork changelog
+
+The [English changelog](CHANGELOG.md) and [German changelog](CHANGELOG.de.md)
+describe each fork build and link to the commits behind it. Both are updated
+with every user-visible fork change; [AGENTS.md](AGENTS.md) records the
+maintenance rule. The comparison starts at upstream `v0.35.1` (`14df53c`).
 
 ## Installation
 
@@ -550,4 +566,4 @@ pipx uninstall ccswap
 
 `ccswap` began as a fork of [claude-swap (`cswap`)](https://github.com/realiti4/claude-swap) by Onur Cetinkol, and still carries the original MIT license and credit for that. Since then it's grown into its own project: no more tracking upstream, no `cswap` compatibility, its own package and release line, and adds Codex support. It's MIT-licensed too, so fork it, file issues, send PRs — whatever's useful to you.
 
-MIT. This fork retains the original project's copyright and license notice; see [LICENSE](LICENSE). Upstream: [realiti4/claude-swap](https://github.com/realiti4/claude-swap).
+MIT. Giorgo's fork retains the original project's copyright and license notice; see [LICENSE](LICENSE). Its immediate upstream is [errhythm/ccswap](https://github.com/errhythm/ccswap), which originated from [realiti4/claude-swap](https://github.com/realiti4/claude-swap).

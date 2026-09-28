@@ -7,6 +7,32 @@ on:
     branches: [main]
 
 jobs:
+  fork-changelog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check bilingual fork changelog
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          test -f CHANGELOG.md
+          test -f CHANGELOG.de.md
+          grep -Fq '](CHANGELOG.md)' README.md
+          grep -Fq '](CHANGELOG.de.md)' README.md
+          diff <(grep '^## ' CHANGELOG.md | sed 's/ — .*//') <(grep '^## ' CHANGELOG.de.md | sed 's/ — .*//')
+          if [[ "$BASE_SHA" != 0000000000000000000000000000000000000000 ]]; then
+            changed="$(git diff --name-only "$BASE_SHA" "$GITHUB_SHA")"
+            if grep -Eq '^(src/|README\.md$|pyproject\.toml$)' <<< "$changed"; then
+              grep -Fxq 'CHANGELOG.md' <<< "$changed"
+              grep -Fxq 'CHANGELOG.de.md' <<< "$changed"
+            fi
+          fi
+
   test:
     runs-on: ubuntu-latest
 
