@@ -22,12 +22,14 @@ bei `0.36.0+gl.1`.
   und `?`, wenn ein Ablaufdatum unbekannt ist (nie als sicher gezeigt). Aus
   einer fehlgeschlagenen oder alten Messung gibt es keine Empfehlung.
   Claude-Resets stehen nicht in dessen Nutzungs-API und werden nicht gezeigt.
+  [Commit](https://github.com/GiorgoLazaridis/ccswap/commit/49e47bf1e4a9186047791921dffc696d3ddccfca) · [Review-Korrektur](https://github.com/GiorgoLazaridis/ccswap/commit/7e581ef17de8357d1b7e592c63802bc2988bae1c)
 - **Zweizeilige Statuszeile.** Eine erste Zeile zeigt Modell und aktuelle
   Kontextgröße aus dem Session-JSON von Claude Code (grün < 50 %, gelb < 80 %,
   rot); der Kontenpool rückt in die zweite Zeile. Aufbau und Kontextfarben
   sind angeregt von [claude-hud](https://github.com/jarrodwatts/claude-hud)
   und [ccusage](https://github.com/ccusage/ccusage); Code wurde von dort nicht
   übernommen.
+  [Commit](https://github.com/GiorgoLazaridis/ccswap/commit/49e47bf1e4a9186047791921dffc696d3ddccfca)
 
 ## 0.36.0+gl.4 — 2026-09-28
 

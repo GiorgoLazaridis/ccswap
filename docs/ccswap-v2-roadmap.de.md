@@ -76,6 +76,12 @@ in der [README](../README.md).
   fehlgeschlagene Messungen sind gekennzeichnet, Kontoänderungen verwerfen
   die Aufnahme.
 
+## Ergänzt in `0.36.0+gl.5`
+
+- Empfehlung für gesammelte Codex-Resets (Fristen rückwärts mit einer Woche
+  Abstand, Farbe nach Dringlichkeit, „lohnt jetzt“), zweizeilige Statuszeile
+  mit Modell und Kontext. Claude-Resets liefert dessen API nicht.
+
 ## Nächste Schritte in sinnvoller Reihenfolge
 
 1. **Start-Race schließen.** Eine kleine, lokale Launch-Reservierung zwischen

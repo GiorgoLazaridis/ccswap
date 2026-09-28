@@ -21,12 +21,14 @@ with `0.36.0+gl.1`.
   when it is worth redeeming now and `?` when an expiry is unknown (never
   shown as safe). Advice from a failed or old measurement is withheld.
   Claude's limit resets are not in its usage API and are not shown.
+  [Commit](https://github.com/GiorgoLazaridis/ccswap/commit/49e47bf1e4a9186047791921dffc696d3ddccfca) · [review fix](https://github.com/GiorgoLazaridis/ccswap/commit/7e581ef17de8357d1b7e592c63802bc2988bae1c)
 - **Two-line status line.** A first line shows the model and current context
   size from Claude Code's session JSON (green < 50 %, yellow < 80 %, red);
   the account pool moves to the second line. The layout and context colors
   were inspired by [claude-hud](https://github.com/jarrodwatts/claude-hud)
   and [ccusage](https://github.com/ccusage/ccusage); no code was taken from
   them.
+  [Commit](https://github.com/GiorgoLazaridis/ccswap/commit/49e47bf1e4a9186047791921dffc696d3ddccfca)
 
 ## 0.36.0+gl.4 — 2026-09-28
 
