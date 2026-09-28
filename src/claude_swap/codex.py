@@ -238,6 +238,13 @@ class CodexAccountSwitcher:
     def _write_sequence(self, data: dict[str, Any]) -> None:
         data["lastUpdated"] = _timestamp()
         self._write_json(self.sequence_file, data)
+        # The quota snapshot is keyed by slot and active number only; after a
+        # switch, add, remove, or enable/disable it may describe the wrong
+        # login. Drop it; the next `codex auto` tick writes a fresh one.
+        try:
+            (self.provider_dir / USAGE_SNAPSHOT_FILENAME).unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def _config(self) -> dict[str, Any]:
         config_path = self.codex_home / "config.toml"
@@ -731,6 +738,8 @@ class CodexAccountSwitcher:
                 "disabled": account.disabled,
                 "kind": account.kind,
                 "usable": account.switchable and account.usage.sentinel is None,
+                # auto-switch ignores a reserve whose last fetch failed
+                "error": account.usage.last_error is not None,
             }
             for account in snapshot.accounts
         }

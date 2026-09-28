@@ -207,3 +207,26 @@ def test_codex_snapshot_roundtrip(tmp_path, monkeypatch):
     assert loaded["accounts"]["1"]["usage"] == usage
     assert codex._cached_usage_line(loaded, "1", now=NOW) == "5h   5% · 7d   7% · 0m ago"
     assert codex.load_usage_snapshot(tmp_path / "missing") is None
+
+
+def test_codex_failed_or_old_measurements_are_flagged():
+    failed = codex_row(3, 3); failed["error"] = True
+    old = codex_row(5, 5); old["fetchedAt"] = NOW - 40 * 60
+    active = codex_row(50, 20, disabled=True)
+    line = statusline.render(
+        snap(account("1", five=1, weekly=1, active=True)), now=NOW, color=False,
+        codex=codex_snapshot(**{"1": failed, "2": active, "3": old}),
+    )
+    assert line.endswith("Codex #2 5h 50% 7d 20% · #1 fetch error #3 5h 5% (40m old)")
+
+
+def test_roster_change_drops_codex_snapshot(tmp_path, monkeypatch):
+    from claude_swap import codex
+
+    monkeypatch.setattr(codex, "get_backup_root", lambda: tmp_path)
+    switcher = codex.CodexAccountSwitcher()
+    target = tmp_path / "codex" / codex.USAGE_SNAPSHOT_FILENAME
+    target.parent.mkdir(parents=True)
+    target.write_text("{}", encoding="utf-8")
+    switcher._write_sequence({"accounts": {}, "sequence": []})
+    assert not target.exists()

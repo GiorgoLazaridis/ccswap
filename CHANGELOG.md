@@ -16,7 +16,10 @@ with `0.36.0+gl.1`.
   active slot; no email, token, or account id). `ccswap statusline` shows the
   Codex pool from it next to Claude, marked `stale` when the loop has not
   written for 15 minutes, and `ccswap list` / `ccswap codex list` show each
-  Codex account's 5h/7d usage and reset from it without a request.
+  Codex account's 5h/7d usage and reset from it without a request. Accounts
+  whose last fetch failed or whose measurement is older than 15 minutes are
+  flagged instead of shown as current, and any roster change (switch, add,
+  remove, enable/disable) discards the snapshot until the next tick.
 - **Leaner status line.** Context and session cost are no longer shown (the
   cost is a list-price estimate that subscriptions are not billed), and a
   reserve's reset reads `reset 1d7h` instead of an arrow symbol.

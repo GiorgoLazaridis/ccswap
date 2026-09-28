@@ -163,24 +163,52 @@ def _codex_part(codex: dict, now: float, color: bool) -> str | None:
     active = codex.get("active")
     rows = {
         str(n): row for n, row in accounts.items()
-        if isinstance(row, dict) and not row.get("disabled") and row.get("kind") == "oauth"
+        if isinstance(row, dict) and row.get("kind") == "oauth"
     }
-    if not rows:
-        return None
-    head = "Codex"
+
+    def note(row: dict) -> str:
+        """Why a row's numbers must not be read as current, or ''."""
+        if row.get("error"):
+            return "fetch error"
+        fetched = _num(row.get("fetchedAt"))
+        if fetched is None:
+            return "no data"
+        if now - fetched > CODEX_STALE_S:
+            return f"{int((now - fetched) // 60)}m old"
+        return ""
+
+    parts = []
     if isinstance(active, str) and active in rows:
-        windows = _codex_windows(rows[active].get("usage"))
+        # The active login stays visible even when held out of rotation.
+        row = rows[active]
+        windows = _codex_windows(row.get("usage"))
         shown = " ".join(
             _paint(f"{label} {pct:.0f}%", pct, color) for label, pct, _ in windows
         ) or "usage ?"
         head = f"Codex #{active} {shown}"
-    others = [
-        _reserve(n, _codex_windows(row.get("usage")), now, color)
-        if row.get("usable", True) else _dim(f"#{n} unusable", color)
-        for n, row in sorted(rows.items(), key=lambda item: int(item[0]))
-        if n != active
-    ]
-    part = " · ".join([head, " ".join(others)]) if others else head
+        if why := note(row):
+            head += " " + _dim(f"({why})", color)
+        parts.append(head)
+    else:
+        parts.append("Codex")
+    others = []
+    for n, row in sorted(rows.items(), key=lambda item: int(item[0])):
+        if n == active or row.get("disabled"):
+            continue
+        if not row.get("usable", True) or row.get("error"):
+            # auto-switch would not pick it; do not advertise old numbers
+            state = "unusable" if not row.get("usable", True) else "fetch error"
+            others.append(_dim(f"#{n} {state}", color))
+            continue
+        text = _reserve(n, _codex_windows(row.get("usage")), now, color)
+        if why := note(row):
+            text += " " + _dim(f"({why})", color)
+        others.append(text)
+    if others:
+        parts.append(" ".join(others))
+    if len(parts) == 1 and parts[0] == "Codex":
+        return None
+    part = " · ".join(parts)
     taken = _num(codex.get("takenAt"))
     if taken is None or now - taken > CODEX_STALE_S:
         age = "" if taken is None else f" {int((now - taken) // 60)}m"

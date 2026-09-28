@@ -16,7 +16,11 @@ bei `0.36.0+gl.1`.
   Konto; keine E-Mail, kein Token, keine Konto-ID). `ccswap statusline` zeigt
   daraus den Codex-Pool neben Claude, als `stale` markiert, wenn die Schleife
   15 Minuten nichts geschrieben hat; `ccswap list` und `ccswap codex list`
-  zeigen je Codex-Konto 5h/7d mit Reset, ohne eigene Abfrage.
+  zeigen je Codex-Konto 5h/7d mit Reset, ohne eigene Abfrage. Konten mit
+  fehlgeschlagenem Abruf oder mehr als 15 Minuten alter Messung werden
+  gekennzeichnet statt als aktuell gezeigt, und jede Kontoänderung (Wechsel,
+  Hinzufügen, Entfernen, Aktivieren/Deaktivieren) verwirft die Momentaufnahme
+  bis zum nächsten Durchlauf.
 - **Schlankere Statuszeile.** Kontext und Sitzungskosten entfallen (die Kosten
   sind nur ein Listenpreis-Gegenwert, den ein Abo nicht bezahlt), und der
   Reset einer Reserve heißt `reset 1d7h` statt eines Pfeilsymbols.
