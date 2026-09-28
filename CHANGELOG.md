@@ -11,6 +11,11 @@ with `0.36.0+gl.1`.
 
 ## Unreleased
 
+- **Claude Code status line.** `ccswap statusline` prints the active account
+  with its 5h/7d and configured per-model usage, the other rotation accounts'
+  binding windows with reset countdowns, and context/cost from Claude Code's
+  session JSON. It only reads the existing cache: no usage request, token
+  refresh, or file write. Errors print a short `ccswap: <error>` line.
 - **Smart launch honors per-model weekly limits.** `ccswap run --smart` and
   `ccswap plan` now apply the `autoswitch.model` setting (for example
   `Fable`) the same way auto-switch does: an account whose configured model

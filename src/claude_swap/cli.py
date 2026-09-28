@@ -1293,6 +1293,11 @@ def main() -> None:
     if argv and argv[0] in ("doctor", "health"):
         _doctor_command(argv[1:], compact=argv[0] == "health")
         return
+    if argv and argv[0] == "statusline":
+        from claude_swap.statusline import main as statusline_main
+
+        statusline_main(argv[1:])
+        return
     if argv and argv[0] == "codex":
         _codex_command(argv[1:])
         return
@@ -1354,6 +1359,7 @@ Commands:
   %(prog)s plan                       preview the next smart session
   %(prog)s doctor                     inspect the native CLI setup
   %(prog)s health                     quick local status, optionally --json
+  %(prog)s statusline                 one line for Claude Code's statusLine
   %(prog)s map <num|email> [path]     map a directory to an account
   %(prog)s map                        list directory mappings
   %(prog)s unmap [path]               remove a directory mapping

@@ -11,6 +11,12 @@ bei `0.36.0+gl.1`.
 
 ## Unreleased
 
+- **Statuszeile für Claude Code.** `ccswap statusline` zeigt das aktive Konto
+  mit 5h-/7d- und konfigurierten Modellwerten, die bindenden Fenster der
+  übrigen Rotationskonten mit Reset-Countdown sowie Kontext und Kosten aus dem
+  Session-JSON von Claude Code. Es liest nur den vorhandenen Cache: keine
+  Quotenabfrage, kein Token-Refresh, kein Schreibzugriff. Fehler erscheinen als
+  kurze Zeile `ccswap: <Fehler>`.
 - **Smart-Start beachtet Modell-Wochenlimits.** `ccswap run --smart` und
   `ccswap plan` werten die Einstellung `autoswitch.model` (zum Beispiel
   `Fable`) nun wie der Auto-Wechsel aus: Ein Konto, dessen konfiguriertes

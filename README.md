@@ -296,6 +296,30 @@ Subfolders inherit the nearest mapped ancestor. In an unmapped directory, `ccswa
 
 </details>
 
+### Claude Code status line
+
+`ccswap statusline` prints one line for Claude Code's
+[`statusLine`](https://code.claude.com/docs/en/statusline) setting: the active
+account with its 5h/7d (and configured `autoswitch.model`) usage, the binding
+window of every other rotation account with a reset countdown once it is at
+90 % or more, and the session's context and cost from Claude Code's own JSON.
+It is read-only: it renders the cache that `ccswap auto` and `ccswap list`
+maintain, never fetches usage or refreshes a token, and falls back to
+`ccswap: <error>` instead of failing the prompt. Claude Code's own
+`rate_limits` replace the cached active-account values when present.
+
+```json
+{ "statusLine": { "type": "command", "command": "ccswap statusline" } }
+```
+
+```text
+#2 work 5h 9% 7d 3% │ #1 7d 100% ↻1d8h │ ctx 42% $1.23
+```
+
+`--no-color` (or `NO_COLOR`) prints plain text. Token and cost history from
+the local session logs is out of scope; [ccusage](https://github.com/ccusage/ccusage)
+covers that for Claude Code and Codex.
+
 ### Interactive dashboard (TUI)
 
 Run `ccswap` on its own (or `ccswap tui`) for the full-screen dashboard: Claude Code and Codex appear together in labelled sections, with live usage, provider-correct switching, and auto-switching, all keyboard-driven. Arrow-key and Vim-style menu navigation wraps at both ends. The menu's **Settings…** screen cycles the theme, dashboard view, auto-switch threshold, and strategy; its dashboard view can show both providers or only Claude Code / Codex without stopping background updates for the hidden provider. `ccswap watch` opens straight into the live monitor using the selected dashboard view. Works on macOS, Linux, and Windows.
@@ -346,6 +370,7 @@ ccswap list                      # Claude + Codex accounts with quota and reset 
 ccswap list --provider codex     # Restrict to one provider (claude|codex|all)
 ccswap list --token-status       # Add source-labelled OAuth token diagnostics
 ccswap status                    # Show current account
+ccswap statusline                # One cached status line for Claude Code's statusLine
 ccswap add --slot 3              # Add account to a specific slot (prompts before overwrite)
 ccswap add --alias dev           # Add account and give it a short alias
 ccswap remove 2                  # Remove an account
