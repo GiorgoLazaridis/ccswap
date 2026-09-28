@@ -20,8 +20,10 @@ bei `0.36.0+gl.1`.
   mit 5h-/7d- und konfigurierten Modellwerten, die bindenden Fenster der
   übrigen Rotationskonten mit Reset-Countdown sowie Kontext und Kosten aus dem
   Session-JSON von Claude Code. Es liest nur den vorhandenen Cache: keine
-  Quotenabfrage, kein Token-Refresh, kein Schreibzugriff. Fehler erscheinen als
-  kurze Zeile `ccswap: <Fehler>`.
+  Quotenabfrage, kein Token-Refresh, kein Schreibzugriff (auch kein Log).
+  Konten ohne nutzbare Anmeldung zeigen ihren Zustand statt alter Prozente.
+  Fehler erscheinen als kurze Zeile `ccswap: <Fehler>`; `NO_COLOR` oder
+  `--no-color` schalten die Farben ab.
 - **Smart-Start beachtet Modell-Wochenlimits.** `ccswap run --smart` und
   `ccswap plan` werten die Einstellung `autoswitch.model` (zum Beispiel
   `Fable`) nun wie der Auto-Wechsel aus: Ein Konto, dessen konfiguriertes

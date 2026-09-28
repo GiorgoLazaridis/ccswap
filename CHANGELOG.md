@@ -20,7 +20,9 @@ with `0.36.0+gl.1`.
   with its 5h/7d and configured per-model usage, the other rotation accounts'
   binding windows with reset countdowns, and context/cost from Claude Code's
   session JSON. It only reads the existing cache: no usage request, token
-  refresh, or file write. Errors print a short `ccswap: <error>` line.
+  refresh, or file write (logging is off). Accounts without usable credentials
+  show their state instead of stale percentages. Errors print a short
+  `ccswap: <error>` line; `NO_COLOR` or `--no-color` disable ANSI colors.
 - **Smart launch honors per-model weekly limits.** `ccswap run --smart` and
   `ccswap plan` now apply the `autoswitch.model` setting (for example
   `Fable`) the same way auto-switch does: an account whose configured model

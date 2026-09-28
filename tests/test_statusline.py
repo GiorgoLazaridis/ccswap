@@ -14,7 +14,7 @@ NOW = 1_800_000_000.0
 
 def account(number: str, *, five=None, weekly=None, weekly_reset=None,
             scoped=(), active=False, disabled=False, kind="oauth",
-            alias="") -> AccountSnapshot:
+            alias="", switchable=True, sentinel=None) -> AccountSnapshot:
     usage: dict = {}
     if five is not None:
         usage["five_hour"] = {"pct": five, "resets_at": None}
@@ -24,8 +24,8 @@ def account(number: str, *, five=None, weekly=None, weekly_reset=None,
         usage["scoped"] = [{"name": n, "pct": p, "resets_at": None} for n, p in scoped]
     return AccountSnapshot(
         number=number, email=f"user{number}@example.test", org_name="",
-        org_uuid=f"org-{number}", is_active=active, kind=kind, switchable=True,
-        usage=UsageEntry(last_good=usage or None, age_s=30), alias=alias,
+        org_uuid=f"org-{number}", is_active=active, kind=kind, switchable=switchable,
+        usage=UsageEntry(last_good=usage or None, age_s=30, sentinel=sentinel), alias=alias,
         disabled=disabled,
     )
 
@@ -116,3 +116,43 @@ def test_statusline_never_probes_the_terminal():
     from claude_swap.appearance import cli_should_probe
 
     assert cli_should_probe(["statusline"], colors_enabled=True) is False
+
+
+def test_unusable_reserve_is_not_advertised_with_old_percentages():
+    line = statusline.render(
+        snap(account("1", five=1, weekly=1, active=True),
+             account("2", five=5, weekly=5, sentinel="token expired"),
+             account("3", five=5, weekly=5, switchable=False)),
+        now=NOW, color=False,
+    )
+    assert line == "#1 user1 5h 1% 7d 1% │ #2 token expired #3 no credentials"
+
+
+def test_failing_snapshot_writes_no_log_and_empty_no_color_disables_color(
+    monkeypatch, capsys
+):
+    import logging
+
+    written = []
+
+    class Recorder(logging.Handler):
+        def emit(self, record):
+            written.append(record)
+
+    def broken(**_kwargs):
+        logging.getLogger("claude-swap").error("roster unreadable")
+        raise RuntimeError("store unreadable")
+
+    logger = logging.getLogger("claude-swap")
+    handler = Recorder()
+    logger.addHandler(handler)
+    monkeypatch.setattr("claude_swap.switcher.ClaudeAccountSwitcher", broken)
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+    monkeypatch.setenv("NO_COLOR", "")
+    try:
+        statusline.main([])
+    finally:
+        logger.removeHandler(handler)
+        logging.disable(logging.NOTSET)
+    assert written == []
+    assert capsys.readouterr().out.strip() == "ccswap: RuntimeError"

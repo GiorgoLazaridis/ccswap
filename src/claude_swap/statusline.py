@@ -10,6 +10,7 @@ are shown next to the pool state that only ccswap knows.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import sys
@@ -126,6 +127,13 @@ def render(
     for account in snapshot.accounts:
         if account is active or account.disabled or account.kind != "oauth":
             continue
+        # Old cached percentages must not advertise an account that cannot
+        # take over (missing credentials, dead token, re-login needed).
+        if not account.switchable or account.usage.sentinel:
+            state = account.usage.sentinel or "no credentials"
+            others.append(f"{_DIM}#{account.number} {state}{_RESET}" if color
+                          else f"#{account.number} {state}")
+            continue
         windows = _cached_windows(account, models)
         if not windows:
             others.append(f"#{account.number} ?")
@@ -162,6 +170,9 @@ def main(argv: list[str]) -> None:
     )
     parser.add_argument("--no-color", action="store_true", help="Plain text output")
     args = parser.parse_args(argv)
+    # Read-only means no log file either: a failing snapshot would otherwise
+    # create or rotate claude-swap.log from inside every prompt refresh.
+    logging.disable(logging.CRITICAL)
     session = read_session(sys.stdin)
     try:
         from claude_swap.settings import load_settings, parse_model_names
@@ -172,7 +183,7 @@ def main(argv: list[str]) -> None:
         models = parse_model_names(load_settings(switcher.backup_dir).model)
         line = render(
             snapshot, session, models=models,
-            color=not args.no_color and not os.environ.get("NO_COLOR"),
+            color=not args.no_color and "NO_COLOR" not in os.environ,
         )
     except Exception as exc:  # a status line must never break the prompt
         line = f"ccswap: {type(exc).__name__}"
