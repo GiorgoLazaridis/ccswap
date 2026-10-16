@@ -280,10 +280,7 @@ class AutoScreen(Screen):
         engine = self._engine
         if engine is None:
             return
-        engine.settings = self._settings
-        pin = getattr(engine, "_pin_poll_inputs", None)
-        if pin is not None:
-            pin()
+        engine.apply_gates(self._settings)
 
     def adjust_menu_text(self) -> Text:
         palette = Palette.from_theme(self.app.current_theme)

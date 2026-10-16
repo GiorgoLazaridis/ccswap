@@ -7039,6 +7039,21 @@ class TestPerGateThresholds:
         reasons = [e for e in h.events if isinstance(e, NoSwitchEvent)]
         assert not any(e.reason == "below-threshold" for e in reasons)
 
+    def test_fable_gate_added_mid_run_is_watched_next_tick(self, temp_home):
+        # The TUI's t popup saves Fable=40 while the engine runs. Fable is not
+        # in autoswitch.model, so the engine must start reading its window.
+        h = self._seed(temp_home)
+        usage = {
+            "1": _windows(5, 5, 45),
+            "2": _windows(5, 5, 10),
+            "3": _windows(20, 20, 20),
+        }
+        assert h.tick_with_usage(usage) is TickOutcome.NO_ACTION
+        h.engine.apply_gates(replace(h.engine.settings, model_thresholds="Fable=40"))
+        assert h.switcher._poll_policy_inputs()[1] == ("Fable",)
+        assert h.tick_with_usage(usage) is TickOutcome.SWITCHED
+        assert h.active_number() == 2
+
     def test_fable_under_its_own_gate_does_not_trip_the_shared_line(self, temp_home):
         h = self._seed(temp_home, model="Fable", model_thresholds="Fable=95")
         outcome = h.tick_with_usage({

@@ -1887,11 +1887,6 @@ class ClaudeAccountSwitcher:
         threshold, models, windows, _gates = self._load_poll_inputs()
         return threshold, models, windows
 
-    def _poll_gate_overrides_map(self) -> dict[str, float]:
-        """Per-gate thresholds that do not inherit ``autoswitch.threshold``."""
-        _threshold, _models, _windows, gates = self._load_poll_inputs()
-        return gates
-
     def switchable_account_numbers(self) -> list[str]:
         """Account numbers in rotation order eligible for automatic selection.
 

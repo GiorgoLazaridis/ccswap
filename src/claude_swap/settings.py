@@ -181,7 +181,7 @@ SETTING_SPECS: dict[str, SettingSpec] = {
         ),
         SettingSpec(
             "autoswitch", "threshold7d", "threshold_7d", "optional_float", 1.0, 99.9,
-            help="Weekly (7d) gate; unset uses autoswitch.threshold",
+            help="Claude weekly (7d) gate; unset uses autoswitch.threshold (Codex Weekly always does)",
         ),
         SettingSpec(
             "autoswitch", "modelThresholds", "model_thresholds", "model_thresholds",

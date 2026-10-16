@@ -56,7 +56,8 @@ const TABS: { id: CcswapTab; label: string; hotkey: string }[] = [
 
 // What each Settings press moves to next.
 const THRESHOLDS = [70, 80, 85, 90, 95]
-const GATE_PCTS: (number | null)[] = [null, 70, 80, 85, 90, 95]
+// Same stops as the TUI settings ladder (tui/dashboard.py _GATE_STOPS).
+const GATE_PCTS: (number | null)[] = [null, 40, 50, 60, 70, 75, 80, 85, 90, 95]
 const STRATEGIES = ['best', 'consume-first']
 const WINDOWS = ['both', '5h', '7d']
 
@@ -368,7 +369,7 @@ function nextOf<T>(list: readonly T[], current: T): T {
 
 /** Next `modelThresholds` after one press of the Fable row.
  *
- * Only Fable moves along `GATE_PCTS` (inherit, then 70–95). Other models stay,
+ * Only Fable moves along `GATE_PCTS` (inherit, then 40–95). Other models stay,
  * in their original order. A Fable percentage that is not one of those stops
  * steps onto the ladder. Null when nothing remains, which unsets the key.
  */

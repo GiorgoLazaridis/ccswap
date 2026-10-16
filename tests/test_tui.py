@@ -2118,6 +2118,9 @@ class _FakeEngine:
         self.settings = dataclasses.replace(self.settings, threshold=threshold)
         self.applied_thresholds.append(threshold)
 
+    def apply_gates(self, settings) -> None:
+        self.settings = settings
+
     def wake(self) -> None:
         self.wakes += 1
 

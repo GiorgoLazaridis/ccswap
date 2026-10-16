@@ -374,10 +374,10 @@ test('history lists only switch lines, newest first', async () => {
 })
 
 test('the Fable gate keeps other model thresholds', async () => {
-  expect(nextFableThresholds('Fable=70,Opus=60')).toBe('Opus=60,Fable=80')
-  expect(nextFableThresholds('Opus=60')).toBe('Opus=60,Fable=70')
-  expect(nextFableThresholds('Fable=40,Opus=60')).toBe('Opus=60,Fable=70')
+  expect(nextFableThresholds('Fable=70,Opus=60')).toBe('Opus=60,Fable=75')
+  expect(nextFableThresholds('Opus=60')).toBe('Opus=60,Fable=40')
+  expect(nextFableThresholds('Fable=40,Opus=60')).toBe('Opus=60,Fable=50')
   expect(nextFableThresholds('Fable=95')).toBe(null)
   expect(nextFableThresholds('Fable=95,Opus=60')).toBe('Opus=60')
-  expect(nextFableThresholds(null)).toBe('Fable=70')
+  expect(nextFableThresholds(null)).toBe('Fable=40')
 })

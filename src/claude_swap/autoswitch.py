@@ -936,9 +936,15 @@ class AutoSwitchEngine:
         self._blocked_wait_long = False
         self._idle_hold_slow = False
         settings = self.settings
-        # Frozen with `settings` above. apply_threshold() may replace
-        # self.settings mid-tick; this tick keeps deciding on the snapshot.
+        # Frozen with `settings` above. apply_threshold()/apply_gates() may
+        # replace self.settings mid-tick; this tick keeps deciding on the
+        # snapshot. A gate added for a new model (Fable=40 with no
+        # autoswitch.model) brings its window in here, never partway through.
         self._decision_gates = gate_thresholds(settings)
+        models = effective_model_names(settings)
+        if models != self._models:
+            self._models = models
+            self._model_check_done = not models
         state = self._read_state()
         if not self.dry_run:
             # Dry-run must not write anything, so recovered quarantines are
@@ -2394,7 +2400,7 @@ class AutoSwitchEngine:
         gates = gate_thresholds(self.settings)
         self.switcher.set_poll_policy_inputs(
             self.settings.threshold,
-            self._models,
+            effective_model_names(self.settings),
             self._windows,
             gate_thresholds=gates.overrides or None,
         )
@@ -2460,7 +2466,7 @@ class AutoSwitchEngine:
 
     def _below_threshold_detail(self, usage_value, absolute_headroom: float) -> str:
         """``"50% < 90%"`` when gates share one threshold (the historical
-        text); otherwise the tightest gate, ``"Fable 45% < 40%"``."""
+        text); otherwise the tightest gate, ``"Fable 35% < 40%"``."""
         gates = self._active_gates()
         if not gates.overrides:
             return (
@@ -2505,12 +2511,18 @@ class AutoSwitchEngine:
 
     def apply_threshold(self, threshold: float) -> None:
         """Session override from the TUI: retarget the trigger and poll
-        cadence mid-run. Threshold only — the model axes (and their derived
-        state) are fixed at construction. Gates that inherit ``threshold``
+        cadence mid-run. Gates that inherit ``threshold``
         follow it; an explicit 5h/7d/model threshold does not. The
         frozen-settings swap is atomic and each tick snapshots
         ``self.settings`` once, so no locking."""
         self.settings = replace(self.settings, threshold=threshold)
+        self._pin_poll_inputs()
+
+    def apply_gates(self, settings: AutoSwitchSettings) -> None:
+        """TUI gate edit (5h, weekly, per-model). Poll cadence follows now;
+        decisions, including a newly gated model's window, from the next
+        tick."""
+        self.settings = settings
         self._pin_poll_inputs()
 
     def _next_delay(self, outcome: TickOutcome) -> float:
