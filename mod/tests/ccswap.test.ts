@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
-import { nextFableThresholds, parseHistory } from '../hooks/register.js'
+import { maskEmail, nextFableThresholds, parseHistory } from '../hooks/register.js'
 
 type Acct = { number: number; email: string; five: number; seven: number }
 
@@ -95,6 +95,28 @@ test('/ccswap lists accounts from ccswap list --json', async ($, on) => {
   expect(out.text).toContain('switch threshold 90%')
   expect(out.text).toMatch(/● #2 {2}two@example\.com\s+5h {2}22% \(2h 19m\) {3}7d {2}69% \(3d 1h\)/)
   expect(out.text).toMatch(/○ #1 {2}one@example\.com/)
+})
+
+test('ui.mask hides emails in the list and switch output', async ($, on) => {
+  on('process.run', ($, e) => {
+    const argv = [...e.argv]
+    const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+    if (argv[1] === 'list') return ok(listJson(2, TWO))
+    if (argv[1] === 'config') return ok(JSON.stringify({ schemaVersion: 1, key: argv[3], value: argv[3] === 'ui.mask' ? true : null, isSet: false }))
+    return ok(JSON.stringify({ schemaVersion: 1, switched: true, message: 'Switched to Account-1 (one@example.com)', warnings: [] }))
+  })
+  collectToasts(on)
+  const out = await slash($, '')
+  expect(out.text).not.toContain('example.com')
+  expect(out.text).toContain('t•o@e•••.com')
+  const best = await slash($, 'best')
+  expect(best.text).toContain('Switched to Account-1 (o•e@e•••.com)')
+})
+
+test('maskEmail matches the TUI mask', () => {
+  expect(maskEmail('alice@acme.com')).toBe('a•••e@a•••.com')
+  expect(maskEmail('ab@x')).toBe('a•@•')
+  expect(maskEmail('')).toBe('')
 })
 
 test('/ccswap best and /ccswap 2 run the right switch argv', async ($, on) => {

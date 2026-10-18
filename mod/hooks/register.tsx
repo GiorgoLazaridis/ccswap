@@ -114,10 +114,44 @@ function toScoped(list: any): CcswapScoped[] {
   )
 }
 
+// Same shape as the TUI's mask (tui/data.py mask_email): alice@acme.com -> a•••e@a•••.com.
+const EMAIL_RE = /[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/g
+
+function maskName(name: string): string {
+  const parts = name.split(/\s+/).filter(Boolean)
+  return parts.length ? parts.map(p => (p.length <= 1 ? '•' : p[0] + '•'.repeat(Math.min(3, p.length - 1)))).join(' ') : name
+}
+
+export function maskEmail(email: string): string {
+  const raw = email.trim()
+  if (!raw) return raw
+  const at = raw.lastIndexOf('@')
+  if (at < 0) return maskName(raw)
+  const local = raw.slice(0, at)
+  const domain = raw.slice(at + 1)
+  const n = local.length
+  const l = n <= 1 ? '•' : n === 2 ? local[0] + '•' : local[0] + '•'.repeat(Math.min(3, n - 2)) + local[n - 1]
+  const dot = domain.indexOf('.')
+  const head = dot < 0 ? domain : domain.slice(0, dot)
+  const h = head.length <= 1 ? '•' : head[0] + '•'.repeat(Math.min(3, head.length - 1))
+  return `${l}@${dot < 0 ? h : h + domain.slice(dot)}`
+}
+
+// ccswap's `ui.mask` setting, re-read with each Claude or Codex list.
+let masking = false
+
+function shown(text: string): string {
+  return masking ? text.replace(EMAIL_RE, maskEmail) : text
+}
+
+async function loadMask($: $): Promise<void> {
+  masking = (await readConfig($, 'ui.mask'))?.value === true
+}
+
 function toSnapshot(data: any, gates: CcswapGates): CcswapSnapshot {
   const accounts: CcswapAccount[] = (Array.isArray(data?.accounts) ? data.accounts : []).map((a: any) => ({
     number: Number(a.number),
-    email: String(a.email ?? ''),
+    email: shown(String(a.email ?? '')),
     active: a.active === true,
     status: String(a.usageStatus ?? 'ok'),
     fiveHour: toWindow(a.usage?.fiveHour),
@@ -254,6 +288,7 @@ async function poll($: $): Promise<CcswapSnapshot> {
   const [list, gates] = await Promise.all([
     ccswap($, ['list', '--provider', 'claude', '--json']),
     loadGates($),
+    loadMask($),
   ])
   const threshold = gates.threshold
   let prev: CcswapSnapshot | null = null
@@ -289,12 +324,12 @@ function pollQuietly($: $): void {
 }
 
 async function loadCodex($: $): Promise<void> {
-  const ran = await ccswap($, ['list', '--provider', 'codex', '--json'])
+  const [ran] = await Promise.all([ccswap($, ['list', '--provider', 'codex', '--json']), loadMask($)])
   const view: CcswapCodexView = ran.ok
     ? {
         accounts: (Array.isArray(ran.data?.accounts) ? ran.data.accounts : []).map((a: any) => ({
           number: Number(a.number),
-          email: String(a.email ?? ''),
+          email: shown(String(a.email ?? '')),
           label: String(a.label ?? a.authMode ?? ''),
           active: a.active === true,
         })),
@@ -442,7 +477,7 @@ async function doSwitch(
       await loadCodex($).catch(() => undefined)
       const to = ran.data?.to
       return ran.data?.switched === true
-        ? { text: `Switched Codex to #${to?.number} ${to?.email ?? ''}. Restart Codex to use it.`, switched: true }
+        ? { text: `Switched Codex to #${to?.number} ${shown(String(to?.email ?? ''))}. Restart Codex to use it.`, switched: true }
         : { text: `Codex is already on #${to?.number ?? target}.`, switched: false }
     }
     const args =
@@ -455,7 +490,7 @@ async function doSwitch(
     if (!ran.ok) return { text: ran.error, switched: false }
     await poll($).catch(() => undefined)
     const warnings: string[] = Array.isArray(ran.data.warnings) ? ran.data.warnings.map(String) : []
-    const lines = [String(ran.data.message ?? (ran.data.switched ? 'Switched.' : 'No switch.')), ...warnings]
+    const lines = [String(ran.data.message ?? (ran.data.switched ? 'Switched.' : 'No switch.')), ...warnings].map(shown)
     if (ran.data.switched) lines.push(KEYCHAIN_NOTE)
     return { text: lines.join('\n'), switched: ran.data.switched === true }
   } finally {
