@@ -377,6 +377,8 @@ Line 1 is the model, context used, folder and git branch, session time and effor
 - A band above the prompt when the active account passes your auto-switch threshold, with a button to switch to the best account. Typing that digit into an empty prompt presses it.
 - A toast when the active account changes, for example after `ccswap auto` switches.
 
+<img src="assets/mod-pane-claude.png" width="760" alt="The ccswap pane in Claude Code: each account's 5h and 7d usage bars, emails masked, with a key to switch to #2">
+
 After turning the mod on or off, run `/reload-plugins` in any open Claude Code session. To install it by hand instead, run this at the Claude Code prompt:
 
 ```
