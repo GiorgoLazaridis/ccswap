@@ -24,6 +24,7 @@ from pathlib import Path
 
 from claude_swap import paths
 from claude_swap.settings import load_ui_settings
+from claude_swap.tui.data import present_alias, present_email
 from claude_swap.usage_store import UsageStore
 
 # Palette: tui/theme.py (hex constants copied; that module imports textual,
@@ -152,7 +153,7 @@ class _Account:
     usage: dict | None  # cached last-good usage dict
 
 
-def _accounts(backup_root: Path) -> tuple[_Account | None, _Account | None]:
+def _accounts(backup_root: Path, mask: bool = False) -> tuple[_Account | None, _Account | None]:
     """``(active, best other)`` from sequence.json + the cached usage table.
 
     The active slot is the one ccswap last recorded; resolving it live would
@@ -174,7 +175,8 @@ def _accounts(backup_root: Path) -> tuple[_Account | None, _Account | None]:
     for num in identities:
         rec = recs[num]
         usage = entries[num].last_good
-        acct = _Account(num, rec.get("alias") or rec.get("email") or "", usage)
+        alias = present_alias(rec.get("alias") or "", mask=mask)
+        acct = _Account(num, alias or present_email(rec.get("email") or "", mask=mask), usage)
         if num == active_num:
             active = acct
         elif not rec.get("disabled") and usage:
@@ -227,7 +229,9 @@ def _spend_line(live: object, cached: object, p: _Palette) -> str | None:
     return line
 
 
-def render(data: dict, p: _Palette = DARK, backup_root: Path | None = None) -> str:
+def render(
+    data: dict, p: _Palette = DARK, backup_root: Path | None = None, mask: bool = False
+) -> str:
     """The full statusline text for one stdin snapshot."""
     sep = f" {_c(p.muted, '│')} "
     model = (data.get("model") or {}).get("display_name") or "Claude"
@@ -255,7 +259,7 @@ def render(data: dict, p: _Palette = DARK, backup_root: Path | None = None) -> s
     parts.append(_c(p.accent if effort in ("high", "xhigh", "max") else p.muted, f"◑ {effort}"))
     lines = [sep.join(parts)]
 
-    active, best = _accounts(backup_root or paths.get_backup_root())
+    active, best = _accounts(backup_root or paths.get_backup_root(), mask)
     acct_parts = []
     if active:
         acct_parts.append(_c(p.accent, f"#{active.num}") + " " + _c(p.fg, active.label))
@@ -298,9 +302,9 @@ def main() -> int:
         if not isinstance(parsed, dict):
             raise ValueError("stdin is not a JSON object")
         data = parsed
-        theme = load_ui_settings(paths.get_backup_root()).theme
+        ui = load_ui_settings(paths.get_backup_root())
         # `auto` can't probe the terminal from a pipe: default to dark.
-        text = render(data, LIGHT if theme == "light" else DARK)
+        text = render(data, LIGHT if ui.theme == "light" else DARK, mask=ui.mask)
     except Exception:
         model = (data.get("model") or {}) if isinstance(data, dict) else {}
         name = model.get("display_name") if isinstance(model, dict) else None

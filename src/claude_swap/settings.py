@@ -81,7 +81,8 @@ class AutoSwitchSettings:
 class UiSettings:
     """Appearance preferences (``ui`` section). ``theme`` selects the TUI/CLI
     color theme; ``auto`` follows terminal-background detection. ``mask``
-    redacts account emails and organization names in the TUI and the Claude Code mod."""
+    redacts account emails and organization names in the TUI, the Claude Code mod
+    and the statusline."""
 
     theme: str = "auto"
     view: str = "combined"
@@ -198,7 +199,7 @@ SETTING_SPECS: dict[str, SettingSpec] = {
         ),
         SettingSpec(
             "ui", "mask", "mask", "bool",
-            help="Mask account emails and organization names in the TUI and Claude Code mod",
+            help="Mask account emails and organization names in the TUI, Claude Code mod and statusline",
         ),
         SettingSpec(
             "claude", "statusline", "statusline", "bool",

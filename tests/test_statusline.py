@@ -76,6 +76,12 @@ def test_render_dark_with_rate_limits(backup):
     assert "$5.00/$20.00" in text  # extra usage comes from the cache
 
 
+def test_mask_hides_the_active_email(backup):
+    text = plain(statusline.render(SAMPLE, statusline.DARK, backup, mask=True))
+    assert "b@x.io" not in text
+    assert "#2 •@•.io" in text
+
+
 def test_render_light_uses_light_palette(backup):
     out = statusline.render(SAMPLE, statusline.LIGHT, backup)
     assert "38;2;149;76;42mOpus" in out and "215;135;95" not in out

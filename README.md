@@ -399,7 +399,7 @@ ccswap config                              # list effective settings ("(default)
 ccswap config get autoswitch.threshold
 ccswap config set autoswitch.threshold 80  # validated: rejects out-of-range values loudly
 ccswap config set ui.view codex             # combined (default), claude, or codex
-ccswap config set ui.mask on                # hide emails and org names in the TUI and mod
+ccswap config set ui.mask on                # hide emails and org names in the TUI, mod and statusline
 ccswap config set autoswitch.model Fable   # per-model switching (see "auto"); Fable,Opus for several
 ccswap config set autoswitch.threshold5h 85 # 5h gate; unset inherits autoswitch.threshold
 ccswap config set autoswitch.threshold7d 70 # weekly gate, independent of the 5h one
