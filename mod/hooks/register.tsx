@@ -730,33 +730,38 @@ export const register: Register = on => {
     const busy = await read($, switching)
     const best = bestOther(snap)
     const bestPct = best ? binding(best, snap.gates ?? defaultGates(snap.threshold))?.pct : undefined
+    // Other mods' bands, or the engine's own, still draw beneath ours.
+    const below = await next(e)
     return (
-      <Box flexDirection="row">
-        <Text>
-          <Text color={c.accent} bold>ccswap</Text>
-          <Text color={c.muted}> · </Text>
-          <Text color={c[severity(bound.pct, bound.threshold)]}>
-            {bound.label} {bound.pct}%
+      <Box flexDirection="column">
+        <Box flexDirection="row">
+          <Text>
+            <Text color={c.accent} bold>ccswap</Text>
+            <Text color={c.muted}> · </Text>
+            <Text color={c[severity(bound.pct, bound.threshold)]}>
+              {bound.label} {bound.pct}%
+            </Text>
+            <Text color={c.fg}> on #{active.number}</Text>
+            <Text color={c.muted}> · </Text>
+            <Text color={best ? c.ok : c.muted}>{best ? `best: #${best.number} (${bestPct}%)` : 'no account with more headroom'}</Text>
+            <Text> </Text>
           </Text>
-          <Text color={c.fg}> on #{active.number}</Text>
-          <Text color={c.muted}> · </Text>
-          <Text color={best ? c.ok : c.muted}>{best ? `best: #${best.number} (${bestPct}%)` : 'no account with more headroom'}</Text>
-          <Text> </Text>
-        </Text>
-        {busy && <Text color={c.muted}>switching…</Text>}
-        {best && !busy && (
-          <Button
-            key="switch-best"
-            label={`Switch to #${best.number}`}
-            plain
-            // a digit hotkey on the band also fires from an empty prompt
-            {...(slotKey(best.number) ? { hotkey: slotKey(best.number) } : {})}
-            onPress={async () => {
-              const done = await doSwitch($, 'best')
-              if (!done.switched) $.ui.toast(`ccswap: ${done.text.split('\n')[0] ?? ''}`)
-            }}
-          />
-        )}
+          {busy && <Text color={c.muted}>switching…</Text>}
+          {best && !busy && (
+            <Button
+              key="switch-best"
+              label={`Switch to #${best.number}`}
+              plain
+              // a digit hotkey on the band also fires from an empty prompt
+              {...(slotKey(best.number) ? { hotkey: slotKey(best.number) } : {})}
+              onPress={async () => {
+                const done = await doSwitch($, 'best')
+                if (!done.switched) $.ui.toast(`ccswap: ${done.text.split('\n')[0] ?? ''}`)
+              }}
+            />
+          )}
+        </Box>
+        {below}
       </Box>
     )
   })

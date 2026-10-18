@@ -195,9 +195,44 @@ test('band shows only at or above the threshold', async ($, on) => {
     const ui = await $.ui.mount({ ...BAND, surface })
     expect(await ui.find({ type: 'Text', text: '5h 93%' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'best: #1 (1%)' })).toBeDefined()
+    // what draws beneath the band (another mod, the engine) stays on screen
+    expect(await ui.find({ type: 'Text', text: 'drawn by Claude Code' })).toBeDefined()
     calls.length = 0
     await ui.press({ key: 'switch-best' })
     expect(calls[0]).toEqual(['ccswap', 'switch', '--strategy', 'best', '--json'])
+    await ui.unmount()
+  }
+})
+
+const HOT: Acct[] = [TWO[0]!, { number: 2, email: 'two@example.com', five: 93, seven: 69 }]
+
+test('band draws alone when nothing beneath it draws', async ($, on) => {
+  const calls: string[][] = []
+  fakeCcswap(on, () => ({ active: 2, accounts: HOT }), calls)
+  collectToasts(on)
+  on('ui.render', () => ({ type: 'Box', props: {}, children: [] }))
+
+  await slash($, 'refresh')
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...BAND, surface })
+    expect(await ui.find({ type: 'Text', text: '5h 93%' })).toBeDefined()
+    calls.length = 0
+    await ui.press({ key: 'switch-best' })
+    expect(calls[0]).toEqual(['ccswap', 'switch', '--strategy', 'best', '--json'])
+    await ui.unmount()
+  }
+})
+
+test('a survey keeps the band to what draws beneath it', async ($, on) => {
+  fakeCcswap(on, () => ({ active: 2, accounts: HOT }))
+  collectToasts(on)
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['survey'] }))
+
+  await slash($, 'refresh')
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...BAND, surface, props: { ...BAND.props, hasSurvey: true } })
+    expect(await ui.find({ type: 'Text', text: 'survey' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '5h 93%' })).toBeUndefined()
     await ui.unmount()
   }
 })
