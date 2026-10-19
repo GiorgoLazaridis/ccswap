@@ -13,7 +13,14 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from claude_swap import app_bundle
+
+# The bundle is macOS-only (reexec_reason says "not macOS" first) and its
+# layout leans on POSIX symlink semantics: Windows refuses os.replace over
+# a directory symlink and prefixes readlink() results with \\?\.
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="symlinks are POSIX-only")
 
 
 def _fake_install(tmp_path: Path, blob: bytes = b"#!fake python\n") -> tuple[Path, Path, Path]:
