@@ -7,16 +7,14 @@ every status item by that identifier (Dimble, Ice, Bartender, SaneBar all do),
 and an item whose owner has none is simply skipped: it never shows up in their
 panel and cannot be hidden, ordered or given a hotkey.
 
-The fix is a minimal bundle built on demand under the data directory::
+The fix is a minimal bundle built on demand::
 
-    claude-swap Menubar.app/
+    /Applications/claude-swap Menubar.app/
       Contents/
         Info.plist          CFBundleIdentifier com.claude-swap.menubar, LSUIElement
         pyvenv.cfg          home = <directory of the real interpreter>
         lib -> <sys.prefix>/lib          symlink: the install's site-packages
-        MacOS/
-          python            byte copy of the real interpreter
-          claude-swap       sh launcher, for Finder / `open`
+        MacOS/python        byte copy of the real interpreter
 
 LaunchServices identifies a process by its executable's path, so the
 interpreter must physically live under ``Contents/MacOS`` (a symlink resolves to
@@ -24,6 +22,16 @@ the original and keeps the nil identity; a copy is ~20 MB, once). CPython then
 finds ``pyvenv.cfg`` one directory up and treats ``Contents`` as its venv:
 ``home`` points it at the stdlib, the ``lib`` symlink at the installed packages.
 So the copy runs the very same claude-swap, just under a name macOS can see.
+
+The bundle lives in ``/Applications`` because the menu bar host
+(``MenuBarAgent``, macOS 26+) resolves a status item's owning bundle from the
+app's location: for an app anywhere else (``~/Applications`` and
+``~/Library/Application Support`` included) the item's identity reads as nil,
+and the moment a menu bar manager hides *anything* through the system's
+assessment-mode allowlist, a nil identity matches nothing and the item is taken
+down with the hidden ones (fif7y/dimble#30 traced the same failure for iStat
+Menus). When ``/Applications`` is not writable the bundle falls back to the data
+directory: the menu bar still works, managers just cannot keep it visible.
 
 The bundle is rebuilt (cheaply: only what changed) on every ``cswap menubar``
 start and the process re-execs into it before AppKit loads. ``uv tool
@@ -45,18 +53,20 @@ from claude_swap.printer import warning
 BUNDLE_ID = "com.claude-swap.menubar"
 BUNDLE_NAME = "claude-swap"
 BUNDLE_DIRNAME = "claude-swap Menubar.app"
+APPLICATIONS_DIR = Path("/Applications")
 OPT_OUT_ENV = "CLAUDE_SWAP_NO_BUNDLE"
 
-_LAUNCHER = """#!/bin/sh
-# Finder / `open` entry point. launchd and `cswap menubar` exec the python
-# next to this script directly; both end up as the same bundled process.
-exec "$(dirname "$0")/python" -m claude_swap menubar
-"""
+
+def bundle_dir(backup_dir: Path, applications: Path = APPLICATIONS_DIR) -> Path:
+    """``/Applications`` when writable (see module docstring), else the data dir."""
+    if os.access(applications, os.W_OK):
+        return applications
+    return Path(backup_dir)
 
 
-def bundle_path(backup_dir: Path) -> Path:
-    """Where the wrapper bundle lives for this data directory."""
-    return Path(backup_dir) / BUNDLE_DIRNAME
+def bundle_path(backup_dir: Path, applications: Path = APPLICATIONS_DIR) -> Path:
+    """Where the wrapper bundle lives for this install."""
+    return bundle_dir(backup_dir, applications) / BUNDLE_DIRNAME
 
 
 def in_bundle(executable: Path | None = None) -> bool:
@@ -81,7 +91,7 @@ def _same_file_content(src: Path, dst: Path) -> bool:
     return a.st_size == b.st_size and a.st_mtime_ns == b.st_mtime_ns
 
 
-def _write_if_changed(path: Path, data: bytes, *, executable: bool = False) -> None:
+def _write_if_changed(path: Path, data: bytes) -> None:
     """Atomic write, skipped when the file already holds ``data``."""
     try:
         if path.read_bytes() == data:
@@ -91,8 +101,7 @@ def _write_if_changed(path: Path, data: bytes, *, executable: bool = False) -> N
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     with os.fdopen(fd, "wb") as fh:
         fh.write(data)
-    mode = 0o755 if executable else 0o644
-    os.chmod(tmp, mode)
+    os.chmod(tmp, 0o644)
     os.replace(tmp, path)
 
 
@@ -138,6 +147,7 @@ def build(
     *,
     executable: Path | None = None,
     prefix: Path | None = None,
+    applications: Path = APPLICATIONS_DIR,
 ) -> Path:
     """Create or refresh the bundle; returns the bundled interpreter's path.
 
@@ -151,17 +161,21 @@ def build(
     ).resolve()
     lib_target = Path(prefix or sys.prefix) / "lib"
 
-    contents = bundle_path(backup_dir) / "Contents"
+    contents = bundle_path(backup_dir, applications) / "Contents"
     macos = contents / "MacOS"
     macos.mkdir(parents=True, exist_ok=True)
 
+    # The interpreter itself is the bundle's executable: menu bar managers
+    # recognise a (re)launched app by "its executable is CFBundleExecutable"
+    # before they re-adopt its icon, and a launcher script in between would
+    # hide the match.
     _write_if_changed(
         contents / "Info.plist",
         plistlib.dumps(
             {
                 "CFBundleIdentifier": BUNDLE_ID,
                 "CFBundleName": BUNDLE_NAME,
-                "CFBundleExecutable": "claude-swap",
+                "CFBundleExecutable": "python",
                 "CFBundlePackageType": "APPL",
                 "LSUIElement": True,
             }
@@ -174,7 +188,6 @@ def build(
         f"home = {src.parent}\ninclude-system-site-packages = false\n".encode(),
     )
     _symlink_if_changed(lib_target, contents / "lib")
-    _write_if_changed(macos / "claude-swap", _LAUNCHER.encode(), executable=True)
     python = macos / "python"
     _copy_if_changed(src, python)
     return python
@@ -207,6 +220,13 @@ def maybe_reexec(backup_dir: Path, argv: list[str] | None = None) -> str | None:
     reason = reexec_reason()
     if reason:
         return reason
+    if bundle_dir(backup_dir) != APPLICATIONS_DIR:
+        warning(
+            f"{APPLICATIONS_DIR} is not writable, so the menu bar bundle lives "
+            f"in {backup_dir}; menu bar managers will hide its icon along with "
+            "anything else they hide.",
+            file=sys.stderr,
+        )
     try:
         python = build(backup_dir)
     except OSError as exc:
