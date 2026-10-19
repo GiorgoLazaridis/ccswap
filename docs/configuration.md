@@ -11,6 +11,7 @@ ccswap config set autoswitch.threshold 80  # validated: rejects out-of-range val
 ccswap config set ui.view codex             # combined (default), claude, or codex
 ccswap config set ui.mask on                # hide emails and org names in the TUI, mod and statusline
 ccswap config set credentials.backend file  # macOS headless/SSH: never use the Keychain
+ccswap config set updates.check off         # stop the daily PyPI check for a newer release
 ccswap config set autoswitch.model Fable   # per-model switching (see "auto"); Fable,Opus for several
 ccswap config set autoswitch.threshold5h 85 # 5h gate; unset inherits autoswitch.threshold
 ccswap config set autoswitch.threshold7d 70 # weekly gate, independent of the 5h one
