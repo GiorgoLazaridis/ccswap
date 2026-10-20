@@ -13,15 +13,26 @@ The fix is a minimal bundle built on demand::
       Contents/
         Info.plist          CFBundleIdentifier com.claude-swap.menubar, LSUIElement
         pyvenv.cfg          home = <directory of the real interpreter>
-        lib -> <sys.prefix>/lib          symlink: the install's site-packages
+        lib/
+          python3.X -> <sys.prefix>/lib/python3.X      the install's site-packages
+          libpython3.X.dylib -> <base>/lib/...         the stub interpreter's dylib
         MacOS/python        byte copy of the real interpreter
 
 LaunchServices identifies a process by its executable's path, so the
 interpreter must physically live under ``Contents/MacOS`` (a symlink resolves to
 the original and keeps the nil identity; a copy is ~20 MB, once). CPython then
 finds ``pyvenv.cfg`` one directory up and treats ``Contents`` as its venv:
-``home`` points it at the stdlib, the ``lib`` symlink at the installed packages.
+``home`` points it at the stdlib, the ``lib`` links at the installed packages.
 So the copy runs the very same claude-swap, just under a name macOS can see.
+
+``Contents/lib`` is a real directory, not a symlink to the venv's ``lib``: many
+managed interpreters (uv's CPython 3.12/3.13, for one) are small stubs linked
+against ``@executable_path/../lib/libpython3.X.dylib``, so the copy resolves
+that path inside the bundle, where the venv's ``lib`` has no such library and
+dyld aborts the process before Python even starts. Recent python-build-
+standalone releases link libpython statically and never look. The directory
+holds links to both: the venv's per-version package dirs and the base
+install's ``libpython*``.
 
 The bundle lives in ``/Applications`` because the menu bar host
 (``MenuBarAgent``, macOS 26+) resolves a status item's owning bundle from the
@@ -44,6 +55,7 @@ from __future__ import annotations
 import os
 import plistlib
 import stat
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -142,6 +154,29 @@ def _symlink_if_changed(target: Path, link: Path) -> None:
     os.replace(tmp, link)
 
 
+def _populate_lib(lib: Path, venv_lib: Path, base_lib: Path) -> None:
+    """Fill ``Contents/lib`` with links to the venv's dirs and the base libpython.
+
+    The copied interpreter may be a stub that dyld-loads
+    ``@executable_path/../lib/libpython3.X.dylib``, so this directory must hold
+    that library as well as the venv's ``python3.X`` (see module docstring).
+    Links that stopped matching (a Python version bump, a reinstall) are pruned.
+    """
+    if lib.is_symlink():  # the earlier layout: lib -> <venv>/lib; no libpython
+        lib.unlink()
+    lib.mkdir(exist_ok=True)
+    targets: dict[str, Path] = {}
+    if venv_lib.is_dir():
+        targets = {p.name: p for p in sorted(venv_lib.iterdir())}
+    for dylib in sorted(base_lib.glob("libpython*")):
+        targets.setdefault(dylib.name, dylib)
+    for name, target in targets.items():
+        _symlink_if_changed(target, lib / name)
+    for entry in lib.iterdir():
+        if entry.name not in targets and entry.is_symlink():
+            entry.unlink()
+
+
 def build(
     backup_dir: Path,
     *,
@@ -187,10 +222,32 @@ def build(
         contents / "pyvenv.cfg",
         f"home = {src.parent}\ninclude-system-site-packages = false\n".encode(),
     )
-    _symlink_if_changed(lib_target, contents / "lib")
+    _populate_lib(contents / "lib", lib_target, src.parent.parent / "lib")
     python = macos / "python"
     _copy_if_changed(src, python)
     return python
+
+
+def interpreter_error(python: Path) -> str | None:
+    """Run the bundled interpreter once; the error if it cannot start, else None.
+
+    Importing claude_swap exercises both failure modes of a bad bundle: a stub
+    interpreter whose libpython is missing aborts in dyld, and a broken ``lib``
+    wiring leaves site-packages unreachable.
+    """
+    try:
+        proc = subprocess.run(
+            [str(python), "-c", "import claude_swap"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return str(exc)
+    if proc.returncode != 0:
+        lines = (proc.stderr or proc.stdout).strip().splitlines()
+        return lines[-1] if lines else f"exit status {proc.returncode}"
+    return None
 
 
 def reexec_reason(platform: str = sys.platform, environ=None) -> str | None:
@@ -214,8 +271,9 @@ def maybe_reexec(backup_dir: Path, argv: list[str] | None = None) -> str | None:
     """Replace this process with the same command run from inside the bundle.
 
     Returns only when staying put, with the reason; on success ``execv`` never
-    returns. A bundle that cannot be built falls back to the plain interpreter
-    (the menu bar still works, it just stays invisible to menu bar managers).
+    returns. A bundle that cannot be built, whose interpreter fails its startup
+    check, or that ``execv`` refuses falls back to the plain interpreter (the
+    menu bar still works, it just stays invisible to menu bar managers).
     """
     reason = reexec_reason()
     if reason:
@@ -230,13 +288,23 @@ def maybe_reexec(backup_dir: Path, argv: list[str] | None = None) -> str | None:
     try:
         python = build(backup_dir)
     except OSError as exc:
-        reason = f"could not build {bundle_path(backup_dir)}: {exc}"
-        warning(
-            f"Menu bar managers will not see this icon ({reason}); "
-            "the menu bar itself works as before.",
-            file=sys.stderr,
-        )
-        return reason
+        return _stay_put(f"could not build {bundle_path(backup_dir)}: {exc}")
+    error = interpreter_error(python)
+    if error:
+        return _stay_put(f"the bundled interpreter cannot start: {error}")
     args = sys.argv[1:] if argv is None else argv
-    os.execv(str(python), [str(python), "-m", "claude_swap", *args])
+    try:
+        os.execv(str(python), [str(python), "-m", "claude_swap", *args])
+    except OSError as exc:
+        return _stay_put(f"could not exec {python}: {exc}")
     return None  # pragma: no cover - execv does not return
+
+
+def _stay_put(reason: str) -> str:
+    """Warn that the plain interpreter keeps running, and hand back the reason."""
+    warning(
+        f"Menu bar managers will not see this icon ({reason}); "
+        "the menu bar itself works as before.",
+        file=sys.stderr,
+    )
+    return reason
