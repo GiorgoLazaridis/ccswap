@@ -296,11 +296,14 @@ class _StoreHost(Protocol):
     """The live configuration view ``CredentialStore`` reads from its owner.
 
     Data only — the store reads these attributes at call time so post-construction
-    overrides (e.g. tests setting ``switcher.platform``) are honored. The store
-    must not reach for any *method* here.
+    overrides (e.g. tests setting ``switcher.platform``) are honored. The
+    credential backend is process-fixed by the real host; ``CredentialStore``
+    still uses a defensive default for older test doubles. The store must not
+    reach for any *method* here.
     """
 
     platform: Platform
+    credential_backend: str
     credentials_dir: Path
     _logger: logging.Logger
 
@@ -350,6 +353,17 @@ class CredentialStore:
         # flag above can stand in for it.
         self._residual_verdict: bool | None = None
         self._last_active_credentials_backend: str | None = None
+
+    def _keychain_platform(self) -> bool:
+        """Whether this host should route credential operations to Keychain.
+
+        ``getattr`` preserves the historical ``auto`` behavior for lightweight
+        hosts in tests and integrations that predate ``credential_backend``.
+        """
+        return (
+            self._host.platform == Platform.MACOS
+            and getattr(self._host, "credential_backend", "auto") != "file"
+        )
 
     def _kc_call(self, fn, *args):
         """Run a ``macos_keychain`` wrapper call, learning Keychain usability.
@@ -402,8 +416,9 @@ class CredentialStore:
     def _use_keychain(self) -> bool:
         """Whether credential ops should target the macOS Keychain right now.
 
-        ``False`` off macOS. On macOS, ``True`` until a Keychain op fails, which
-        drops to file mode. That failure records a re-probe deadline
+        ``False`` off macOS and in the explicit file backend. In macOS ``auto``
+        mode, ``True`` until a Keychain op fails, which drops to file mode. That
+        failure records a re-probe deadline
         (``KEYCHAIN_RECHECK_COOLDOWN_S``): within one CLI invocation the deadline
         never passes, so a command can't split-brain between backends, but a
         long-running daemon re-probes once the cooldown elapses so a transient
@@ -411,7 +426,7 @@ class CredentialStore:
         A pinned file mode with no deadline (0.0) stays sticky — see
         :meth:`_pin_file_mode` for why a write fallback must never re-probe.
         """
-        if self._host.platform != Platform.MACOS:
+        if not self._keychain_platform():
             return False
         if (
             self._keychain_usable_cache is False
@@ -469,9 +484,9 @@ class CredentialStore:
         One predicate, because the two facts have been conflated once per site
         that spelled them out separately: every caller that means "unreadable"
         must ask here rather than read ``_keychain_usable_cache`` raw. The
-        platform check belongs here for the same reason — off macOS there is no
-        Keychain to be unreadable, and only every call path being macOS-gated
-        keeps the cache at ``None`` there today.
+        backend/platform check belongs here for the same reason — when Keychain
+        routing is disabled there is no Keychain read to classify as unreadable,
+        and only every call path being gated keeps the cache at ``None`` there.
 
         Asks through :meth:`_use_keychain` rather than the raw cache, because
         the cooldown re-probe lives there and the BACKUP read path never calls
@@ -483,7 +498,7 @@ class CredentialStore:
         A pinned file mode is unaffected: its deadline is 0.0, so
         ``_use_keychain`` never re-probes it.
         """
-        if self._host.platform != Platform.MACOS:
+        if not self._keychain_platform():
             return False
         if self._use_keychain():          # may clear a lapsed cooldown
             return False
@@ -794,12 +809,13 @@ class CredentialStore:
         resurrect it (#30337). Best-effort: when the Keychain is down the delete
         can't run, which is the documented recovery residual.
 
-        Returns whether no active item can shadow the file. ``delete_password``
+        Returns whether no routed active item can shadow the file. ``delete_password``
         returns only on rc 0 or rc 44 (already absent) and raises otherwise, so
         a return is proof — which is the fact ``_pin_file_mode`` needs and used
-        to discard. Off macOS there is no Keychain item, hence ``True``.
+        to discard. With Keychain routing disabled the item is outside this
+        store's authority, hence ``True`` without touching it.
         """
-        if self._host.platform != Platform.MACOS:
+        if not self._keychain_platform():
             return True
         try:
             macos_keychain.delete_password(
@@ -890,7 +906,7 @@ class CredentialStore:
 
         # Mutual exclusion: drop the OAuth credential so it can't shadow the key.
         self._clear_oauth_credential()
-        if self._host.platform == Platform.MACOS and not wrote_to_keychain:
+        if self._keychain_platform() and not wrote_to_keychain:
             # Same stale-Keychain resurrection guard as the OAuth path: the key
             # fell back to plaintext ``primaryApiKey`` while a stale "Claude Code"
             # Keychain item may remain, and managed-key reads check the Keychain
@@ -926,7 +942,7 @@ class CredentialStore:
         per token while it lies, and a caller/log reader must be able to
         tell "nothing to clear" from "could not check".
         """
-        if self._host.platform == Platform.MACOS:
+        if self._keychain_platform():
             try:
                 macos_keychain.delete_password(
                     CLAUDE_CODE_MANAGED_KEYCHAIN_SERVICE,
@@ -1015,7 +1031,7 @@ class CredentialStore:
         except Exception as e:
             raise CredentialWriteError(f"Failed to write credentials: {e}")
         cleared = self._delete_active_keychain_entry()
-        if self._host.platform == Platform.MACOS:
+        if self._keychain_platform():
             # The delete above is best-effort; a stale Keychain item may remain.
             # Pin file mode so a later read-timeout cooldown can't re-probe onto
             # that residual and resurrect the wrong account (see _pin_file_mode).
@@ -1237,7 +1253,7 @@ class CredentialStore:
                     if decoded:
                         return decoded
                     # Empty/whitespace .enc is not a real backup → try the Keychain.
-        if self._host.platform == Platform.MACOS:
+        if self._keychain_platform():
             try:
                 return self._kc_read_backup(account_num, email)
             except macos_keychain.KEYCHAIN_ERRORS as e:
@@ -1272,7 +1288,7 @@ class CredentialStore:
         value = self._read_account_credentials(account_num, email, failed)
         if value:
             return value, False
-        if self._host.platform != Platform.MACOS:
+        if not self._keychain_platform():
             return "", bool(failed)
         # Whether THIS read reached the Keychain, observed at the read itself.
         #
@@ -1356,7 +1372,7 @@ class CredentialStore:
         except Exception as e:
             self._host._logger.warning(f"Failed to write credentials file: {e}")
             raise
-        if self._host.platform == Platform.MACOS:
+        if self._keychain_platform():
             self._delete_backup_keychain_quiet(account_num, email)
 
     def _delete_account_credentials(self, account_num: str, email: str) -> None:
@@ -1378,7 +1394,7 @@ class CredentialStore:
                     enc_file.unlink()
             except Exception as e:
                 self._host._logger.warning(f"Failed to delete credentials file: {e}")
-            if self._host.platform == Platform.MACOS:
+            if self._keychain_platform():
                 self._delete_backup_keychain_quiet(num, email)
             self.delete_previous_backup(num, email)
 
@@ -1411,7 +1427,7 @@ class CredentialStore:
         # (missing_ok), permission/I/O errors must abort the commit.
         try:
             self._backup_enc_path(account_num, email).unlink(missing_ok=True)
-            if self._host.platform == Platform.MACOS:
+            if self._keychain_platform():
                 self._kc_delete_backup(account_num, email)
         except (OSError, *macos_keychain.KEYCHAIN_ERRORS) as e:
             raise CredentialError(
@@ -1447,7 +1463,7 @@ class CredentialStore:
                 prev_file.unlink()
         except Exception as e:
             self._host._logger.warning(f"Failed to delete .prev file: {e}")
-        if self._host.platform == Platform.MACOS:
+        if self._keychain_platform():
             try:
                 self._kc_delete_backup_prev(account_num, email)
             except Exception as e:
@@ -1555,7 +1571,7 @@ class CredentialStore:
                     return decoded
             except Exception as e:
                 self._host._logger.warning(f"Failed to read .prev file: {e}")
-        if self._host.platform == Platform.MACOS:
+        if self._keychain_platform():
             try:
                 return self._kc_call(
                     macos_keychain.get_password,

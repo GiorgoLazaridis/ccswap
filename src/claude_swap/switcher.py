@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import json
 import logging
@@ -45,6 +46,7 @@ from claude_swap.json_output import (
 )
 from claude_swap.credentials import (  # noqa: F401  (constants re-exported for migrations/tests)
     CLAUDE_CODE_KEYCHAIN_SERVICE,
+    CLAUDE_CODE_MANAGED_KEYCHAIN_SERVICE,
     SECURITY_SERVICE,
     ActiveCredentials,
     CredentialStore,
@@ -89,6 +91,7 @@ from claude_swap import poll_policy
 from claude_swap.settings import (
     effective_model_names,
     gate_thresholds,
+    load_credential_settings,
     load_settings,
     parse_window_selection,
     settings_path,
@@ -348,6 +351,11 @@ class ClaudeAccountSwitcher:
                 file=sys.stderr,
             )
 
+        # Read once per process. In explicit file mode the credential store must
+        # never probe the macOS Keychain, even if it becomes available later.
+        self.credential_backend: str = load_credential_settings(
+            self.backup_dir
+        ).backend
         self.sequence_file = self.backup_dir / "sequence.json"
         self.configs_dir = self.backup_dir / "configs"
         self.credentials_dir = self.backup_dir / "credentials"
@@ -812,6 +820,45 @@ class ClaudeAccountSwitcher:
 
     def _backup_enc_path(self, account_num: str, email: str) -> Path:
         return self._store._backup_enc_path(account_num, email)
+
+    def _refuse_incomplete_file_backend(self) -> None:
+        """Refuse file mode when it would strand Keychain-only account backups.
+
+        The setting takes effect in the next process, so the last safe point to
+        prove every managed account is available without Keychain is before the
+        config write. Missing ``sequence.json`` means there is no roster yet.
+        """
+        if self.platform != Platform.MACOS:
+            return
+        data = self._get_sequence_data()
+        if not data:
+            return
+        missing: list[str] = []
+        for account_num, info in data.get("accounts", {}).items():
+            email = info.get("email", "")
+            backup = self._backup_enc_path(str(account_num), email)
+            # Decode exactly as the file-mode read will: a non-empty but corrupt
+            # .enc would pass a size check, then read as empty once the Keychain
+            # copy is no longer consulted.
+            try:
+                encoded = backup.read_text(encoding="utf-8").strip()
+                usable = bool(
+                    base64.b64decode(encoded, validate=True).decode("utf-8").strip()
+                )
+            except (OSError, ValueError):
+                usable = False
+            if not usable:
+                missing.append(email)
+        if missing:
+            raise ConfigError(
+                "Cannot set credentials.backend to file: these managed accounts "
+                f"have no usable file backup: {', '.join(missing)}. Either remove "
+                "them (`ccswap remove <email>`), switch, then log in and "
+                "`ccswap add` each again; or, from a GUI terminal where the "
+                "Keychain is readable: `ccswap export <path>`, remove them, "
+                "`ccswap config set credentials.backend file`, then "
+                "`ccswap import <path>`."
+            )
 
     def _write_backup_enc(self, account_num: str, email: str, credentials: str) -> None:
         self._store._write_backup_enc(account_num, email, credentials)
@@ -5828,6 +5875,8 @@ class ClaudeAccountSwitcher:
         if json_output:
             return self._build_status_payload()
 
+        self._warn_residual_keychain_items()
+
         identity = self._get_current_account()
         if identity is None:
             print(f"{bolded('Status:')} {dimmed('No active Claude account')}")
@@ -7437,6 +7486,43 @@ class ClaudeAccountSwitcher:
             ))
         else:
             print(dimmed("New account is active on your next message — no restart needed."))
+        self._warn_residual_keychain_items()
+
+    def _residual_keychain_items(self) -> list[str]:
+        """Active Claude Code Keychain services that can shadow file mode.
+
+        Attribute-only ``item_exists`` checks never decrypt secrets or feed the
+        credential store's Keychain capability state.
+        """
+        if self.platform != Platform.MACOS or self.credential_backend != "file":
+            return []
+        account = macos_keychain.keychain_account_name()
+        return [
+            service
+            for service in (
+                CLAUDE_CODE_KEYCHAIN_SERVICE,
+                CLAUDE_CODE_MANAGED_KEYCHAIN_SERVICE,
+            )
+            if macos_keychain.item_exists(service, account)
+        ]
+
+    def _warn_residual_keychain_items(self) -> None:
+        """Warn when unlocked-Keychain credentials would override file mode."""
+        services = self._residual_keychain_items()
+        if not services:
+            return
+        names = ", ".join(f'"{service}"' for service in services)
+        commands = ", ".join(
+            f'`security delete-generic-password -s "{service}"`'
+            for service in services
+        )
+        warning(
+            f"Residual Keychain item(s) {names} exist. Claude Code reads the "
+            "Keychain before the credential file, so an unlocked-Keychain "
+            "environment (such as a GUI session) will override the file written "
+            f"by ccswap. From a GUI terminal, run {commands}, or use Claude Code "
+            "only over SSH."
+        )
 
     def purge(self) -> None:
         """Remove all traces of claude-swap from the system.

@@ -14,6 +14,7 @@ import pytest
 from claude_swap.exceptions import ConfigError
 from claude_swap.settings import (
     ClaudeIntegrationSettings,
+    CredentialSettings,
     SETTING_SPECS,
     atomic_write_json,
     AutoSwitchSettings,
@@ -216,6 +217,7 @@ class TestSettingSpecs:
         sources = {
             "autoswitch": AutoSwitchSettings(),
             "ui": UiSettings(),
+            "credentials": CredentialSettings(),
             "claude": ClaudeIntegrationSettings(),
         }
         for spec in SETTING_SPECS.values():

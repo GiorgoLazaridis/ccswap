@@ -1064,12 +1064,31 @@ Examples:
             on = action == "set" and parse_setting_value(setting_spec(args.key), args.value)
             print(set_enabled(root, args.key, on))
         elif action == "set":
+            if args.key == "credentials.backend":
+                backend = parse_setting_value(setting_spec(args.key), args.value)
+                if backend == "file":
+                    switcher._refuse_incomplete_file_backend()
             value = set_setting(root, args.key, args.value)
             print(f"{args.key} = {format_setting_value(value)}")
+            if args.key == "credentials.backend":
+                # Switchers intentionally pin this setting at construction. For
+                # this just-completed command, update the local view so the
+                # post-write residual warning reflects the new value.
+                switcher.credential_backend = value
+                switcher._warn_residual_keychain_items()
+                print(dimmed(
+                    "Restart any running ccswap auto, menubar, or TUI instance "
+                    "to use the new credential backend."
+                ))
         elif action == "unset":
             if unset_setting(root, args.key):
                 default = setting_spec(args.key).default
                 print(f"{args.key} unset (default: {format_setting_value(default)})")
+                if args.key == "credentials.backend":
+                    print(dimmed(
+                        "Restart any running ccswap auto, menubar, or TUI instance "
+                        "to use the new credential backend."
+                    ))
             else:
                 print(muted(f"{args.key} is not set; nothing to do"), file=sys.stderr)
     except ClaudeSwitchError as e:
