@@ -505,3 +505,200 @@ class TestSwitchGuardRound3:
         )
         assert s2._backup_enc_path(slot, email).exists()
         assert s2._read_account_credentials(slot, email) == ACTIVE_CREDS
+
+
+# --------------------------------------------------------------------------
+# Review fixes: the live login, the way back to auto, hand-edited file mode,
+# session mode, and profile-scoped Keychain names
+# --------------------------------------------------------------------------
+
+
+def _creds(refresh: str, expires_at: int) -> str:
+    return json.dumps({
+        "claudeAiOauth": {
+            "accessToken": f"sk-{refresh}",
+            "refreshToken": refresh,
+            "expiresAt": expires_at,
+            "scopes": ["user:inference", "user:profile"],
+        }
+    })
+
+
+OLD = _creds("rt-old", 1_000)
+NEW = _creds("rt-new", 2_000)
+
+
+def _seed_keychain_login(block_real_keychain, creds: str) -> None:
+    acct = macos_keychain.keychain_account_name()
+    block_real_keychain.data[(CLAUDE_CODE_KEYCHAIN_SERVICE, acct)] = creds
+
+
+class TestLiveLoginGuard:
+    """Entering file mode: a readable Keychain with a NEWER login than the
+    plaintext file means Claude Code rotates tokens in the Keychain here, so
+    the file is an older generation a file-mode switch would back up."""
+
+    def test_refused_when_keychain_login_is_newer(
+        self, temp_home: Path, on_macos, block_real_keychain, capsys
+    ):
+        _seed_keychain_login(block_real_keychain, NEW)
+        _write_active_file(OLD)
+        code, out, err = _config(["set", "credentials.backend", "file"], capsys)
+        assert code != 0
+        assert _backend_on_disk() is None
+        assert "security delete-generic-password" in out + err
+
+    def test_allowed_when_file_is_newer_or_matches(
+        self, temp_home: Path, on_macos, block_real_keychain, capsys
+    ):
+        for keychain in (OLD, NEW):
+            _seed_keychain_login(block_real_keychain, keychain)
+            _write_active_file(NEW)
+            code, _, _ = _config(["set", "credentials.backend", "file"], capsys)
+            assert code == 0
+            assert _backend_on_disk() == "file"
+            _config(["unset", "credentials.backend"], capsys)
+
+    def test_allowed_when_keychain_is_locked(
+        self, temp_home: Path, on_macos, block_real_keychain, locked_keychain, capsys
+    ):
+        _seed_keychain_login(block_real_keychain, NEW)
+        _write_active_file(OLD)
+        code, _, _ = _config(["set", "credentials.backend", "file"], capsys)
+        assert code == 0
+        assert _backend_on_disk() == "file"
+
+
+class TestLeavingFileMode:
+    def test_refused_when_file_is_newer_than_keychain(
+        self, temp_home: Path, on_macos, block_real_keychain, capsys
+    ):
+        _use_file_backend()
+        _seed_keychain_login(block_real_keychain, OLD)
+        _write_active_file(NEW)
+        for argv in (["set", "credentials.backend", "auto"], ["unset", "credentials.backend"]):
+            code, out, err = _config(argv, capsys)
+            assert code != 0
+            assert _backend_on_disk() == "file"
+            assert "security delete-generic-password" in out + err
+
+    def test_allowed_when_keychain_is_newer(
+        self, temp_home: Path, on_macos, block_real_keychain, capsys
+    ):
+        """settings.json hand-edited to file on a GUI Mac: nothing was written
+        in file mode, the Keychain login is the newest, and auto should use it."""
+        _use_file_backend()
+        _seed_keychain_login(block_real_keychain, NEW)
+        _write_active_file(OLD)
+        code, _, _ = _config(["set", "credentials.backend", "auto"], capsys)
+        assert code == 0
+        assert _backend_on_disk() == "auto"
+
+    @pytest.mark.parametrize("text", ["{}", "not json", "[1]"])
+    def test_file_without_a_login_does_not_block(
+        self, temp_home: Path, on_macos, block_real_keychain, capsys, text
+    ):
+        _use_file_backend()
+        _seed_keychain_login(block_real_keychain, OLD)
+        _write_active_file(text)
+        code, _, _ = _config(["set", "credentials.backend", "auto"], capsys)
+        assert code == 0
+        assert _backend_on_disk() == "auto"
+
+    def test_allowed_without_a_keychain_login(self, temp_home: Path, on_macos, capsys):
+        _use_file_backend()
+        _write_active_file(NEW)
+        code, _, _ = _config(["set", "credentials.backend", "auto"], capsys)
+        assert code == 0
+        assert _backend_on_disk() == "auto"
+
+    def test_locked_keychain_warns_but_allows(
+        self, temp_home: Path, on_macos, block_real_keychain, locked_keychain, capsys
+    ):
+        _use_file_backend()
+        _seed_keychain_login(block_real_keychain, OLD)
+        _write_active_file(NEW)
+        code, out, err = _config(["unset", "credentials.backend"], capsys)
+        assert code == 0
+        assert f'"{CLAUDE_CODE_KEYCHAIN_SERVICE}"' in out + err
+
+
+class TestUnorderableLogins:
+    """Two different logins with the same expiry can't be ordered."""
+
+    def test_entering_refuses_and_leaving_warns(
+        self, temp_home: Path, on_macos, block_real_keychain, capsys
+    ):
+        _seed_keychain_login(block_real_keychain, _creds("rt-a", 1_000))
+        _write_active_file(_creds("rt-b", 1_000))
+        code, _, _ = _config(["set", "credentials.backend", "file"], capsys)
+        assert code != 0
+
+        _use_file_backend()
+        code, out, err = _config(["set", "credentials.backend", "auto"], capsys)
+        assert code == 0
+        assert f'"{CLAUDE_CODE_KEYCHAIN_SERVICE}"' in out + err
+
+    def test_leaving_with_newer_keychain_still_warns(
+        self, temp_home: Path, on_macos, block_real_keychain, capsys
+    ):
+        _use_file_backend()
+        _seed_keychain_login(block_real_keychain, NEW)
+        _write_active_file(OLD)
+        code, out, err = _config(["set", "credentials.backend", "auto"], capsys)
+        assert code == 0
+        assert f'"{CLAUDE_CODE_KEYCHAIN_SERVICE}"' in out + err
+
+
+class TestHandEditedFileMode:
+    """settings.json edited by hand skips `config set`; account operations
+    must still refuse, while `config set ... auto` stays the way back."""
+
+    def test_switch_and_export_refuse_keychain_only_accounts(
+        self, temp_home: Path, on_macos, capsys
+    ):
+        from claude_swap.transfer import export_accounts
+
+        _seed_accounts(["a@example.com", "b@example.com"], with_enc={"a@example.com"})
+        _use_file_backend()
+        s = _macos_switcher()
+        with pytest.raises(ConfigError, match="b@example.com"):
+            s._perform_switch("1")
+        with pytest.raises(ConfigError, match="b@example.com"):
+            export_accounts(s, str(temp_home / "out.cswap"))
+
+        code, _, _ = _config(["set", "credentials.backend", "auto"], capsys)
+        assert code == 0
+        assert _backend_on_disk() == "auto"
+
+
+class TestSessionModeRefused:
+    def test_run_refuses_in_file_mode(self, temp_home: Path, on_macos, capsys):
+        _seed_accounts(["a@example.com"], with_enc={"a@example.com"})
+        _use_file_backend()
+        with patch("os.geteuid", return_value=1000, create=True), \
+             patch("claude_swap.session.SessionManager.run") as run:
+            with pytest.raises(SystemExit) as exc:
+                cli._run_command(["2"])
+        assert exc.value.code == 1
+        run.assert_not_called()
+        assert "session mode" in capsys.readouterr().err
+
+
+class TestResidualUsesProfileServiceName:
+    def test_hashed_item_is_reported_under_custom_config_dir(
+        self, temp_home: Path, mock_claude_config: Path, block_real_keychain,
+        locked_keychain, monkeypatch, capsys,
+    ):
+        from claude_swap.session import keychain_service_name
+
+        config_dir = str(temp_home / "work-profile")
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", config_dir)
+        monkeypatch.delenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", raising=False)
+        hashed = keychain_service_name(config_dir)
+        acct = macos_keychain.keychain_account_name()
+        block_real_keychain.data[(hashed, acct)] = "stale"
+        _use_file_backend()
+        s = _macos_switcher()
+
+        assert hashed in s._residual_keychain_items()

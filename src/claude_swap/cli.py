@@ -10,7 +10,7 @@ import sys
 
 from claude_swap import __version__, paths, printer
 from claude_swap.codex import CodexAccountSwitcher
-from claude_swap.exceptions import ClaudeSwitchError
+from claude_swap.exceptions import ClaudeSwitchError, ConfigError
 from claude_swap.json_output import error_envelope
 from claude_swap.printer import (
     accent,
@@ -191,6 +191,7 @@ Examples:
         manager = SessionManager(switcher)
 
         if args.account is not None:
+            _refuse_session_in_file_backend(switcher)
             manager.run(
                 args.account,
                 tail,
@@ -203,6 +204,7 @@ Examples:
         # No account given: resolve from the current directory's mapping.
         slot, email = switcher.slot_for_directory(os.getcwd())
         if slot is not None:
+            _refuse_session_in_file_backend(switcher)
             manager.run(
                 slot,
                 tail,
@@ -230,6 +232,18 @@ Examples:
     except KeyboardInterrupt:
         print(f"\n{dimmed('Operation cancelled')}")
         sys.exit(130)
+
+
+def _refuse_session_in_file_backend(switcher: ClaudeAccountSwitcher) -> None:
+    """Session profiles keep their credentials in the macOS Keychain, which the
+    file backend promises never to touch, so refuse before starting one."""
+    from claude_swap.models import Platform
+
+    if switcher.platform == Platform.MACOS and switcher.credential_backend == "file":
+        raise ConfigError(
+            "ccswap run (session mode) needs the macOS Keychain and is not "
+            "supported with credentials.backend file. Use `ccswap switch` instead."
+        )
 
 
 def _guard_root(switcher: ClaudeAccountSwitcher) -> None:
@@ -1068,6 +1082,8 @@ Examples:
                 backend = parse_setting_value(setting_spec(args.key), args.value)
                 if backend == "file":
                     switcher._refuse_incomplete_file_backend()
+                else:
+                    switcher._refuse_leaving_file_backend()
             value = set_setting(root, args.key, args.value)
             print(f"{args.key} = {format_setting_value(value)}")
             if args.key == "credentials.backend":
@@ -1081,6 +1097,8 @@ Examples:
                     "to use the new credential backend."
                 ))
         elif action == "unset":
+            if args.key == "credentials.backend":
+                switcher._refuse_leaving_file_backend()
             if unset_setting(root, args.key):
                 default = setting_spec(args.key).default
                 print(f"{args.key} unset (default: {format_setting_value(default)})")

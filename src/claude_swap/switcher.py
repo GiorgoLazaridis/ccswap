@@ -328,6 +328,15 @@ def _sweep_legacy_keyring(usernames: list[str], removed_items: list[str]) -> Non
         pass  # keyring unavailable — nothing to clean up
 
 
+def _oauth_login(text: str) -> dict | None:
+    """The ``claudeAiOauth`` payload of a credential string, or None for empty,
+    malformed or non-object JSON (``extract_oauth_data`` assumes an object)."""
+    try:
+        return oauth.extract_oauth_data(text)
+    except (ValueError, AttributeError):
+        return None
+
+
 
 
 
@@ -822,17 +831,130 @@ class ClaudeAccountSwitcher:
         return self._store._backup_enc_path(account_num, email)
 
     def _refuse_incomplete_file_backend(self) -> None:
-        """Refuse file mode when it would strand Keychain-only account backups.
+        """Refuse file mode when it would strand Keychain-only account backups,
+        or when Claude Code's live login is in a readable Keychain.
 
         The setting takes effect in the next process, so the last safe point to
         prove every managed account is available without Keychain is before the
         config write. Missing ``sequence.json`` means there is no roster yet.
+
+        The live-login check covers the account that is active right now: where
+        Claude Code keeps rotating tokens in the Keychain, the plaintext file is
+        an older generation, and the first file-mode switch would back it up
+        over that account's good backup.
         """
         if self.platform != Platform.MACOS:
             return
+        state, service = self._keychain_login_vs_file()
+        if state in ("keychain-newer", "differs"):
+            raise ConfigError(
+                f'Cannot set credentials.backend to file: Claude Code\'s login in '
+                f'the Keychain item "{service}" does not match '
+                f"{get_credentials_path()}, so that file is out of date. File "
+                "mode is for Macs where Claude Code runs only with the Keychain "
+                "locked (over SSH). If that is this Mac, delete the leftover "
+                f'item with `security delete-generic-password -s "{service}"`, '
+                "log in to Claude Code over SSH, and try again."
+            )
+        missing = self._accounts_without_file_backup()
+        if missing:
+            raise ConfigError(
+                "Cannot set credentials.backend to file: these managed accounts "
+                f"have no usable file backup: {', '.join(missing)}. Either remove "
+                "them (`ccswap remove <email>`), switch, then log in and "
+                "`ccswap add` each again; or, from a GUI terminal where the "
+                "Keychain is readable: `ccswap export <path>`, remove them, "
+                "`ccswap config set credentials.backend file`, then "
+                "`ccswap import <path>`."
+            )
+
+    def _refuse_leaving_file_backend(self) -> None:
+        """Refuse going back to ``auto`` when the Keychain holds another login.
+
+        ``auto`` reads the Keychain before the plaintext file, so an older
+        Keychain login would replace the one ccswap kept current in the file.
+        A newer Keychain login (e.g. settings.json edited by hand on a GUI Mac,
+        where nothing was written in file mode) is what ``auto`` should pick, so
+        that is allowed. A locked or unorderable Keychain only gets a warning,
+        since refusing could leave no way back.
+        """
+        if self.platform != Platform.MACOS or self.credential_backend != "file":
+            return
+        state, service = self._keychain_login_vs_file()
+        if state == "file-newer":
+            raise ConfigError(
+                f'Cannot leave the file backend: the Keychain item "{service}" '
+                f"holds a different login than {get_credentials_path()}, and "
+                "auto reads the Keychain first, so it would use that older "
+                f'login. Delete it with `security delete-generic-password -s '
+                f'"{service}"`, then try again.'
+            )
+        # keychain-newer is allowed but still warned: expiry order only means
+        # something within one account, and the Keychain may hold another one.
+        if state in ("unreadable", "differs", "keychain-newer"):
+            self._warn_residual_keychain_items()
+
+    def _require_file_backups(self) -> None:
+        """In file mode, refuse an account operation that would need the
+        Keychain. Covers a ``settings.json`` edited by hand, which skips the
+        ``config set`` check; kept out of ``__init__`` so ``config set
+        credentials.backend auto`` still works as the way back."""
+        if self.platform != Platform.MACOS or self.credential_backend != "file":
+            return
+        missing = self._accounts_without_file_backup()
+        if missing:
+            raise ConfigError(
+                "credentials.backend is file, but these managed accounts have no "
+                f"usable file backup: {', '.join(missing)}. Run `ccswap config set "
+                "credentials.backend auto` from a GUI terminal, or remove and "
+                "re-add them."
+            )
+
+    def _keychain_login_vs_file(self) -> tuple[str, str]:
+        """Compare Claude Code's Keychain login with the plaintext credential file.
+
+        Returns ``(state, service)``: ``"unreadable"`` (locked or failing, so
+        Claude Code is using the file), ``"absent"``, ``"no-file"`` (Keychain
+        login but no OAuth login in the file, so nothing there to copy or
+        protect), ``"same"``, ``"keychain-newer"``, ``"file-newer"``, or
+        ``"differs"`` when the two can't be ordered. Calls the Keychain wrapper directly so this probe never
+        changes the credential store's view of Keychain usability.
+        """
+        from claude_swap.credentials import _active_oauth_keychain_services
+
+        account = macos_keychain.keychain_account_name()
+        for service in _active_oauth_keychain_services():
+            try:
+                value = macos_keychain.get_password(service, account)
+            except macos_keychain.KEYCHAIN_ERRORS:
+                return "unreadable", service
+            if value:
+                try:
+                    text = get_credentials_path().read_text(encoding="utf-8")
+                except OSError:
+                    text = ""
+                file_login = _oauth_login(text)
+                if not file_login:
+                    return "no-file", service
+                if oauth.credential_fingerprint(value) == oauth.credential_fingerprint(text):
+                    return "same", service
+                # A newer token generation expires later; that orders the two.
+                kc_exp = (_oauth_login(value) or {}).get("expiresAt")
+                file_exp = file_login.get("expiresAt")
+                if (
+                    isinstance(kc_exp, (int, float))
+                    and isinstance(file_exp, (int, float))
+                    and kc_exp != file_exp
+                ):
+                    return ("keychain-newer" if kc_exp > file_exp else "file-newer"), service
+                return "differs", service
+        return "absent", ""
+
+    def _accounts_without_file_backup(self) -> list[str]:
+        """Emails of managed accounts whose ``.enc`` backup is missing or unusable."""
         data = self._get_sequence_data()
         if not data:
-            return
+            return []
         missing: list[str] = []
         for account_num, info in data.get("accounts", {}).items():
             email = info.get("email", "")
@@ -849,16 +971,7 @@ class ClaudeAccountSwitcher:
                 usable = False
             if not usable:
                 missing.append(email)
-        if missing:
-            raise ConfigError(
-                "Cannot set credentials.backend to file: these managed accounts "
-                f"have no usable file backup: {', '.join(missing)}. Either remove "
-                "them (`ccswap remove <email>`), switch, then log in and "
-                "`ccswap add` each again; or, from a GUI terminal where the "
-                "Keychain is readable: `ccswap export <path>`, remove them, "
-                "`ccswap config set credentials.backend file`, then "
-                "`ccswap import <path>`."
-            )
+        return missing
 
     def _write_backup_enc(self, account_num: str, email: str, credentials: str) -> None:
         self._store._write_backup_enc(account_num, email, credentials)
@@ -6972,6 +7085,7 @@ class ClaudeAccountSwitcher:
         from claude_swap.session import scan_live_sessions
 
         self._refuse_session_shell()
+        self._require_file_backups()
         warnings_out: list[str] = []
         # Session-mode drift. Switching the default login to an account that
         # also has a live session profile puts the same refresh token in two
@@ -7576,11 +7690,15 @@ class ClaudeAccountSwitcher:
         """
         if self.platform != Platform.MACOS or self.credential_backend != "file":
             return []
+        # The OAuth item's name depends on the profile (CLAUDE_CONFIG_DIR hashes
+        # it), so resolve it the way the credential store does.
+        from claude_swap.credentials import _active_oauth_keychain_services
+
         account = macos_keychain.keychain_account_name()
         return [
             service
             for service in (
-                CLAUDE_CODE_KEYCHAIN_SERVICE,
+                *_active_oauth_keychain_services(),
                 CLAUDE_CODE_MANAGED_KEYCHAIN_SERVICE,
             )
             if macos_keychain.item_exists(service, account)
