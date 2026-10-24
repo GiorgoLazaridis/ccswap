@@ -24,9 +24,17 @@
 | Platform | Credentials | Config backups |
 |----------|-------------|----------------|
 | Windows | File-based (inside the backup directory, under `credentials/`) | `~/.claude-swap-backup/` |
-| macOS | macOS Keychain | `~/.claude-swap-backup/` |
+| macOS | macOS Keychain (or explicit file backend) | `~/.claude-swap-backup/` |
 | Linux / WSL | File-based (inside the backup directory, under `credentials/`) | `${XDG_DATA_HOME:-~/.local/share}/claude-swap/` |
 
 Session-mode profiles (`ccswap run`) live under the backup directory in `sessions/`. Tool preferences (`settings.json`) and auto-switch state (`autoswitch_state.json` — cooldown and quarantined accounts; delete it to reset) live in the backup directory root.
 
 On Linux/WSL, set `XDG_DATA_HOME` to override the default location.
+
+## macOS over SSH / headless
+
+- On a Mac used only with the login Keychain locked, `ccswap config set credentials.backend file` makes Claude Code's plaintext credential file authoritative and keeps account backups under `credentials/`.
+- Before switching, ccswap requires every managed account to have a usable file backup. If it refuses, remove the listed accounts, switch, then `ccswap add` each again after logging in; or, from a GUI terminal, `ccswap export <path>`, remove them, switch, then `ccswap import <path>`.
+- Restart any running `ccswap auto`, menu bar, or TUI instance after changing the backend.
+- Use file mode only when Claude Code will not run with the Keychain unlocked; `ccswap status` warns about residual items that would override the file and gives their removal commands.
+- `ccswap run` session mode is not supported with the file backend because session profiles still access the Keychain.

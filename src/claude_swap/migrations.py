@@ -314,6 +314,10 @@ def migrate_macos_keyring_to_security(switcher: "ClaudeAccountSwitcher") -> bool
     """
     if switcher.platform != Platform.MACOS:
         return False
+    if getattr(switcher, "credential_backend", "auto") == "file":
+        # Explicit file mode must never touch the Keychain. Left pending, not
+        # marked done, so it still runs if the user returns to ``auto``.
+        return False
     if not switcher.sequence_file.exists():
         return False  # No managed accounts yet — let a later restore migrate.
 

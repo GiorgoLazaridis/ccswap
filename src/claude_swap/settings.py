@@ -2,8 +2,9 @@
 
 One versioned JSON file for user-tunable claude-swap preferences, written
 atomically with the backup dir's 0600/0700 modes. v1 carries the
-``autoswitch`` and ``ui`` sections, plus ``claude`` (the statusline saved
-by ``claude_integration``); other sections can be added additively.
+``autoswitch``, ``ui``, and ``credentials`` sections, plus ``claude`` (the
+statusline saved by ``claude_integration``); other sections can be added
+additively.
 Unknown keys (future fields, other tools' experiments) survive a round trip.
 
 Reading is forgiving — a missing or corrupt file yields defaults with a logged
@@ -90,6 +91,14 @@ class UiSettings:
 
 
 @dataclass(frozen=True)
+class CredentialSettings:
+    """Credential storage preferences (``credentials`` section). ``backend``
+    selects automatic platform routing or an explicit file-only backend."""
+
+    backend: str = "auto"
+
+
+@dataclass(frozen=True)
 class ClaudeIntegrationSettings:
     """Claude Code integrations (``claude`` section): action keys whose value
     is read live from Claude Code (see ``claude_integration``), never stored.
@@ -102,6 +111,7 @@ class ClaudeIntegrationSettings:
 _SECTION_DEFAULT_SOURCES = {
     "autoswitch": AutoSwitchSettings,
     "ui": UiSettings,
+    "credentials": CredentialSettings,
     "claude": ClaudeIntegrationSettings,
 }
 
@@ -200,6 +210,14 @@ SETTING_SPECS: dict[str, SettingSpec] = {
         SettingSpec(
             "ui", "mask", "mask", "bool",
             help="Mask account emails and organization names in the TUI, Claude Code mod and statusline",
+        ),
+        SettingSpec(
+            "credentials", "backend", "backend", "choice",
+            choices=("auto", "file"),
+            help=(
+                "macOS: file never touches the Keychain (for headless/SSH-only "
+                "machines); auto detects it"
+            ),
         ),
         SettingSpec(
             "claude", "statusline", "statusline", "bool",
@@ -525,6 +543,26 @@ def load_ui_settings(backup_root: Path) -> UiSettings:
     return UiSettings(theme=theme, view=view, mask=mask)
 
 
+def load_credential_settings(backup_root: Path) -> CredentialSettings:
+    """Load the credentials section; missing/corrupt/bad fields → defaults."""
+    raw = _read_raw(settings_path(backup_root))
+    section = raw.get("credentials")
+    default = CredentialSettings()
+    if not isinstance(section, dict):
+        return default
+    backend = section.get("backend", default.backend)
+    if (
+        not isinstance(backend, str)
+        or backend not in SETTING_SPECS["credentials.backend"].choices
+    ):
+        _logger.warning(
+            "settings.json: unsupported credentials.backend %r; using %r",
+            backend, default.backend,
+        )
+        backend = default.backend
+    return CredentialSettings(backend=backend)
+
+
 def save_settings(backup_root: Path, settings: AutoSwitchSettings) -> None:
     """Write the autoswitch section, preserving unknown keys and sections."""
     path = settings_path(backup_root)
@@ -703,6 +741,7 @@ def effective_settings(
     loaded = {
         "autoswitch": load_settings(backup_root),
         "ui": load_ui_settings(backup_root),
+        "credentials": load_credential_settings(backup_root),
     }
     rows = []
     for spec in SETTING_SPECS.values():
