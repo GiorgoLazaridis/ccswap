@@ -12,6 +12,7 @@ import time
 import webbrowser
 from pathlib import Path
 
+from claude_swap.fsutil import atomic_write_text
 from claude_swap.printer import accent, muted
 from claude_swap.usage_store import UsageStore
 
@@ -90,6 +91,6 @@ def maybe_ask(switcher, from_num: str | None) -> None:
         elif answer == "n":
             state["never"] = True
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(state), encoding="utf-8")
+        atomic_write_text(path, json.dumps(state))
     except Exception:
         pass
