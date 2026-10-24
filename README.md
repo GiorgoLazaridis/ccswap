@@ -4,27 +4,26 @@
 [![PyPI](https://img.shields.io/pypi/v/ccswap.svg)](https://pypi.org/project/ccswap/)
 [![Python versions](https://img.shields.io/pypi/pyversions/ccswap.svg)](https://pypi.org/project/ccswap/)
 [![Downloads](https://img.shields.io/pypi/dm/ccswap.svg)](https://pypi.org/project/ccswap/)
-[![License](https://img.shields.io/pypi/l/ccswap.svg)](LICENSE)
+[![License](https://img.shields.io/pypi/l/ccswap.svg)](https://github.com/errhythm/ccswap/blob/main/LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/errhythm/ccswap?style=social)](https://github.com/errhythm/ccswap)
 
 Multi-account and usage manager for Claude Code and OpenAI Codex. Save multiple logins, check their quota windows, switch manually or automatically before you hit a rate limit, and manage both providers from one dashboard.
 
-<img src="assets/tui-watch.png" width="760" alt="ccswap watch — live 5h/7d usage bars for every account, with reset times and the active account marked">
+<img src="https://raw.githubusercontent.com/errhythm/ccswap/main/assets/tui-watch.png" width="760" alt="ccswap watch: live usage bars for every Claude Code and Codex account, with reset times and the active account marked">
 
 ## What it does
 
-- Stores several Claude Code logins and several Codex CLI logins side by side, and switches the active one with `ccswap switch 2` or `ccswap codex switch 2`.
-- Reads each account's quota windows: Claude's 5-hour and 7-day usage, Codex's weekly window and credit balance, and every reset time, all in `ccswap list`.
-- `ccswap auto` polls every 60 seconds and moves to the account with the most quota left once the active one crosses the threshold (default 90%), so the switch happens before the rate limit does.
-- `ccswap run 2` launches Claude Code as account 2 in the current terminal only, leaving every other terminal on your default login, so two accounts work in parallel.
-- Maps a directory to an account, so a bare `ccswap run` in that repo starts the right login.
-- Full-screen TUI dashboard (`ccswap tui`, or `ccswap watch` for the live monitor) showing both providers with live usage and keyboard-driven switching, on macOS, Linux, and Windows.
-- Optional macOS menu-bar app with 5h / 7d / spend per account and click-to-switch, installable as a launchd agent that starts at login.
-- `--json` on `list`, `status`, and `switch`, plus `ccswap auto --once` with outcome exit codes, for cron jobs and scripts.
+- Keeps several Claude Code and Codex CLI logins side by side and switches the active one with `ccswap switch 2` or `ccswap codex switch 2`.
+- Shows every account's 5-hour, 7-day and Codex weekly usage with reset times in `ccswap list`.
+- `ccswap auto` switches to the account with the most quota left once the active one crosses 90%, before the rate limit hits.
+- `ccswap run 2` starts Claude Code as account 2 in one terminal only, so two accounts work in parallel.
+- A full-screen dashboard (`ccswap`) on macOS, Linux and Windows, and an optional macOS menu bar app.
+- `--json` output and exit codes for scripts and cron.
 
 ## Quick start
 
 ```bash
-uv tool install ccswap
+uv tool install ccswap     # or: pipx install ccswap
 
 # Log into Claude Code with your first account, then:
 ccswap add
@@ -38,527 +37,52 @@ ccswap auto       # or let it switch for you before a limit is hit
 
 Codex accounts work the same way: run `codex login`, then `ccswap codex add`.
 
-## Contents
+You usually don't need to restart Claude Code after a switch. Codex always needs one. See [restarts](https://github.com/errhythm/ccswap/blob/main/docs/how-it-works.md#restarts-and-session-behavior).
 
-- [Installation](#installation)
-- [Usage](#usage)
-- [Restarts and session behavior](#restarts-and-session-behavior)
-- [How it works](#how-it-works)
-- [Where ccswap stores data](#where-ccswap-stores-data)
-- [Menu bar (macOS)](#menu-bar-macos)
-- [Claude Code statusline and mod](#claude-code-statusline-and-mod)
-- [Advanced](#advanced)
-- [Agent skill](#agent-skill)
-- [Uninstall](#uninstall)
-- [Requirements](#requirements)
-- [License and credits](#license-and-credits)
+## Common tasks
 
-## Installation
+**Switch by quota.** `ccswap switch --strategy best` picks the account with the most quota left. `--strategy consume-first` picks the one whose weekly limit resets soonest, so none of it expires unused. [All switch options](https://github.com/errhythm/ccswap/blob/main/docs/commands.md#switch-accounts)
 
-### Using uv (recommended)
+**Switch automatically.** `ccswap auto` polls every 60 seconds and is safe to run while Claude Code works. Thresholds, per-model limits, cron mode and strategies are in [auto-switching](https://github.com/errhythm/ccswap/blob/main/docs/auto-switching.md).
 
-```bash
-uv tool install ccswap
-```
+**Two accounts at once.** `ccswap run 2` launches Claude Code as account 2 in this terminal only. `ccswap map 2 ~/work` makes a bare `ccswap run` pick account 2 in that folder. [Session mode](https://github.com/errhythm/ccswap/blob/main/docs/session-mode.md)
 
-### Using pipx
+**Codex.** `ccswap codex list`, `codex switch` and `codex auto` mirror the Claude commands. Codex must use its file credential store. [Codex accounts](https://github.com/errhythm/ccswap/blob/main/docs/codex.md)
 
-```bash
-pipx install ccswap
-```
+**Dashboard and menu bar.** Run `ccswap` for the dashboard, or `ccswap watch` for the live monitor above. On macOS, `ccswap menubar --install-service` keeps a menu bar app running at login. [Dashboard and menu bar](https://github.com/errhythm/ccswap/blob/main/docs/dashboard.md)
 
-### From source
+**Inside Claude Code.** An optional statusline and a `/ccswap` pane, both off until you turn them on. [Statusline and mod](https://github.com/errhythm/ccswap/blob/main/docs/statusline-and-mod.md)
 
-```bash
-git clone https://github.com/errhythm/ccswap.git
-cd ccswap
-uv sync
-uv run ccswap help
-```
+## Documentation
 
-### Updating
-
-```bash
-ccswap upgrade          # uv/pipx installs on macOS/Linux: auto-detects and upgrades
-# or run your installer directly:
-uv tool upgrade ccswap
-pipx upgrade ccswap
-```
-
-## Usage
-
-### Add your first account
-
-Log into Claude Code with your first account, then:
-
-```bash
-ccswap add
-```
-
-### Add more accounts
-
-Log in with another account, then:
-
-```bash
-ccswap add
-```
-
-### Switch accounts
-
-Rotate to the next account:
-
-```bash
-ccswap switch
-```
-
-Or switch to a specific account:
-
-```bash
-ccswap switch 2
-ccswap switch user@example.com
-ccswap switch dev                # or by alias, once set with `ccswap alias 2 dev`
-```
-
-Not sure which one? `ccswap list` is the dashboard — every account's quota usage and reset times at a glance:
-
-```bash
-ccswap list
-```
-
-Or ccswap auto-picks by remaining quota — `ccswap switch --strategy best` (most quota left) or `--strategy next-available` (skip rate-limited accounts).
-
-**Note:** You usually don't need to restart — on Linux/Windows the new account is picked up automatically, and on macOS after the Keychain cache expires. To apply it instantly, restart Claude Code or reopen the VS Code extension tab. See [Restarts and session behavior](#restarts-and-session-behavior) for the per-platform details.
-
-### Automatic switching before you hit a rate limit
-
-Let ccswap watch your usage and switch for you. When the active account's 5-hour or 7-day window reaches the threshold (default 90%), it switches to the account with the most quota left — before you hit the limit, and safe to run while Claude Code is working:
-
-```bash
-ccswap auto                     # foreground loop, polls every 60s
-ccswap auto --threshold 80      # switch earlier
-ccswap auto --model Fable       # also switch when the Fable weekly limit is hit
-ccswap auto --once              # single check-and-switch, for cron/scripts
-ccswap auto --dry-run           # log what it would do, never switch
-ccswap auto --strategy consume-first   # burn the soonest-resetting account first
-```
-
-<details>
-<summary>How it behaves & advanced usage</summary>
-
-- Runs safely alongside Claude Code: switches take the same credential locks Claude Code uses, so a swap never collides with a token refresh.
-- A cooldown (default 5 min) and a hysteresis margin stop it flip-flopping near the threshold: a proactive switch only lands on an account that's below the threshold *and* better than the current one by the margin — a candidate that clears the margin is always taken, but two accounts hovering at the line never ping-pong. When every account is exhausted it keeps checking on a bounded slow cadence, waking sooner for an imminent reset.
-- **Strategies** (`--strategy`, or `ccswap config set autoswitch.strategy`): `best` (default) stays put until the active account nears its limit, then moves to the account with the most quota left. `consume-first` proactively keeps you on the account whose **weekly window resets soonest** — use-it-or-lose-it — switching to a sooner-resetting account (with room to spare) even below the threshold, so perishable weekly quota isn't wasted.
-- Usage polling is adaptive — a couple of accounts per check, busy alternates watched more closely, and exhausted ones checked about every ten minutes (or slower after 429s) — so API traffic stays flat no matter how many accounts you manage.
-- It fails safe: if a usage check errors it keeps trusting the last-known numbers while retries back off, and an expired token on an idle machine makes it hold rather than fail over (Claude Code refreshes the token on your next message).
-- An account whose refresh token has died is quarantined and reported until you either log in with it and re-run `ccswap add --slot N`, or replace its stored credentials from a known-good export — a plain `ccswap import backup.cswap` replaces dead-token slots on its own (`--force` is still required to replace other existing accounts; note a stale export can carry an already-superseded token). API-key accounts are never rotated onto unless you pass `--include-api-key-accounts`.
-- To hold an account out of rotation yourself — a work account you don't want touched, one you're resting — run `ccswap disable <num|email>`; `ccswap enable <num|email>` puts it back. Disabled accounts are skipped by auto-switch, bare `ccswap switch`, and the `best` / `next-available` strategies, but stay fully managed and remain a valid explicit `ccswap switch <num|email>` target. They show a `(disabled)` marker in `ccswap list`, in the [TUI](#interactive-dashboard-tui), and in the [menu bar](#menu-bar-macos) — both of which also let you toggle the state in place (TUI: menu → *Disable / enable account…*; menu bar: *Disable / enable account*).
-- By default only the account-wide 5h/7d windows drive switching, and they share one threshold. If you work on one model and hit its **weekly per-model limit** first (e.g. Fable), add `--model Fable` (or `ccswap config set autoswitch.model Fable`) to fold that model's window into the decision, so it switches off an account whose model quota is spent even while its 5h/7d windows still have room.
-- **Separate gates** (`5h`, weekly `7d`, and any named model such as Fable): any one of them reaching its own threshold switches, even if the others are fine. Unset gates inherit `autoswitch.threshold`.
-
-```bash
-ccswap config set autoswitch.threshold5h 85    # session window
-ccswap config set autoswitch.threshold7d 70    # weekly window
-ccswap config set autoswitch.modelThresholds Fable=40   # Fable=40,Opus=60 for several
-ccswap config unset autoswitch.threshold5h     # back to inheriting autoswitch.threshold
-```
-
-The TUI settings menu cycles the same three gates (inherit, then 40–95%). On the auto-switch view, `t` opens a popup for the same numbers: ↑↓ moves between the shared threshold (this session only) and the 5h, weekly, and Fable gates (saved immediately); ←→ changes the selected value by 1%, and ⌫ returns a gate to inherit. `ccswap auto --threshold-5h 85 --threshold-7d 70 --model-thresholds Fable=40` overrides them for one run. Naming a model in `modelThresholds` makes it a gate even without `autoswitch.model`. `autoswitch.windows` still chooses whether 5h, 7d, or both are gates at all. Model names are Anthropic's own per-model `display_name`s, matched case-insensitively; the exact strings are the per-model rows in `ccswap list` (e.g. `Fable: 100%`).
-- **Which window binds** (`ccswap config set autoswitch.windows <both|5h|7d>`, default `both`): narrows the decision to just one of the two account-wide windows. Set it to `5h` to switch only on the rolling session window and never on the weekly one — for someone happy to run their weekly quota all the way down. Set it to `7d` for the opposite: ignore the session window, switch only when the weekly one is the problem. `ccswap list` and `cswap watch` keep showing both numbers regardless — this only changes what `auto` decides on.
-
-For cron/systemd timers, `--once` reports the outcome in its exit code (`0` switched, `1` error, `2` nothing to do, `3` blocked — no viable target), and `--json` emits one JSON event per line:
-
-```bash
-*/5 * * * * ccswap auto --once --json >> ~/.ccswap-auto.log 2>&1
-```
-
-Defaults like the threshold and cooldown are configurable with `ccswap config set autoswitch.threshold 80` — flags override them (see [Configuration](#configuration)).
-
-</details>
-
-### Run multiple accounts at the same time (session mode)
-
-Launch Claude Code as a specific account in the current terminal only — every other terminal and the VS Code extension stay on your default account, so two accounts can work in parallel.
-
-```bash
-ccswap run 2                     # launch Claude Code as account 2, here only
-ccswap run user@example.com      # by email
-ccswap run 2 -- --resume         # everything after '--' is forwarded to claude
-ccswap run 2 --share-history     # share your chat history with this account too
-ccswap run 2 --require-session   # refuse rather than run plain claude if 2 is the default login
-```
-
-Sessions use your normal `~/.claude` setup (settings, CLAUDE.md, skills, MCP servers, etc.), but each account keeps its own chat history — pass `--share-history` if you want your accounts to continue the same conversations.
-
-Running the account that is already your default login launches plain `claude` on that login instead of a session (a second copy of the active credential would go stale). Scripts that need the isolation guaranteed can pass `--require-session`, which refuses in that case instead.
-  
-A session refreshes its own copy of the account's token, so once it exits, the credential it rotated is captured back into the account's stored backup before a switch or usage check uses that backup. While a session is still running, `ccswap switch` refuses to move the default login onto its account if the stored backup has already fallen behind (activating it could only fail); exit the session first, or pick another account. While a session runs, its account's usage is read with the session's own credential and never refreshed by ccswap; a read the server refuses shows as token expired, and is not requested again, until the session renews the credential on its next call.
-
-<details>
-<summary>Sharing details — MCP servers & chat history</summary>
-
-- With `--share-history`, a session started under one account shows up in `--resume` under the others, and nothing already saved is lost.
-- User-scope MCP servers (`claude mcp add -s user`) are mirrored from your default profile on every launch — manage them there; changes made inside a session don't persist. Definitions are copied as-is (including inline `env`/`headers` values), but MCP OAuth logins are not — HTTP servers may ask you to authenticate once per profile via `/mcp`.
-- `--no-share` turns sharing off and removes the mirrored MCP config (profiles that never mirrored are left alone).
-
-</details>
-
-<details>
-<summary>Map accounts to directories — auto-pick per repo</summary>
-
-Bind a directory to an account, and a bare `ccswap run` there launches that account in session mode — e.g. work account in work repos, personal elsewhere:
-
-```bash
-ccswap map 2 ~/work/client-app   # map a directory to account 2
-ccswap map user@example.com      # map the current directory
-ccswap map                       # list mappings
-ccswap unmap ~/work/client-app   # remove one (defaults to current directory)
-
-cd ~/work/client-app/src
-ccswap run                       # → account 2, session mode
-```
-
-Subfolders inherit the nearest mapped ancestor. In an unmapped directory, `ccswap run` just launches plain `claude` with your default login. Mappings are per-machine (not part of `ccswap export`) and are cleaned up when their account is removed.
-
-</details>
-
-### Interactive dashboard (TUI)
-
-Run `ccswap` on its own (or `ccswap tui`) for the full-screen dashboard: Claude Code and Codex appear together in labelled sections, with live usage, provider-correct switching, and auto-switching, all keyboard-driven. Arrow-key and Vim-style menu navigation wraps at both ends. The menu's **Settings…** screen cycles the theme, dashboard view, auto-switch threshold, and strategy, and toggles **Mask account info**. Masking hides email addresses and organization names on the dashboard, the `w` watch page, and the auto-switch view — including its candidate list and event log — while slot numbers and aliases stay visible so you can still switch. `m` toggles it from any screen, and the footer shows `Mask on` or `Mask off`. The same switch is `ccswap config set ui.mask on` (off by default). The dashboard view can show both providers or only Claude Code / Codex without stopping background updates for the hidden provider. `ccswap watch` opens straight into the live monitor using the selected dashboard view. Works on macOS, Linux, and Windows.
-
-### Codex CLI accounts
-
-`ccswap` can also save and switch Codex CLI logins. Log into each account with `codex login`, then save it before logging into the next one:
-
-```bash
-codex login
-ccswap codex add
-
-# Log in to the next Codex account, then save it too.
-codex login
-ccswap codex add
-
-ccswap codex list                 # accounts tagged by plan, e.g. [Codex Team]
-ccswap codex usage                # Quota, credit allowance, and banked resets
-ccswap codex switch 1
-ccswap codex switch                 # rotate to the next saved account
-ccswap codex auto --once            # switch when active quota reaches the threshold
-ccswap codex remove 2
-```
-
-Codex switching preserves the rest of `CODEX_HOME` (configuration, skills, sessions, and history) and replaces only `auth.json`. Restart Codex after switching so its running process loads the selected login. For ChatGPT-backed file logins, the dashboard reads the same read-only Codex rate-limit endpoints used by Codex and shows the weekly window with a live reset countdown, the workspace/purchased credit balance, the per-user credit allowance when the service reports one, plus the number of banked resets and the earliest available reset's expiry. Credits, per-user allowances, and banked resets are shown separately because they are different resources. Window labels are derived from the duration reported by Codex, so older accounts that still return a 5-hour window remain correctly labelled. Each account is labelled by its ChatGPT plan (`Codex Team`, `Codex Pro`, `Codex Plus`, …) — read from the login token, the closest local equivalent to Claude Code's org name, since Codex stores no workspace name on disk. API-key accounts have no ChatGPT subscription quota, so they remain status-only. `ccswap codex auto` uses the same threshold, cooldown, `--once`, `--dry-run`, and JSON event controls as Claude auto-switching; it prepares the account for the next Codex launch and reports when a restart is needed.
-
-Codex must use its documented file credential store. If your `~/.codex/config.toml` says `cli_auth_credentials_store = "keyring"`, change it to `"file"`, run `codex login`, then add the account. This deliberate restriction avoids writing a guessed OS-keyring entry.
-
-### Refresh expired tokens
-
-If an account's token expires, log back into Claude Code with that account and re-run:
-
-```bash
-ccswap add
-```
-
-This will update the stored credentials without creating a duplicate.
-
-### Command reference
-
-```bash
-ccswap run 2                     # Run an account in this terminal only (session mode)
-ccswap auto                      # Auto-switch when nearing rate limits (see above)
-ccswap codex list                # List saved Codex CLI accounts
-ccswap codex switch 2            # Switch the file-backed Codex login
-ccswap config                    # Show or edit settings (see Configuration below)
-ccswap list                      # Claude + Codex accounts with quota and reset times
-ccswap list --provider codex     # Restrict to one provider (claude|codex|all)
-ccswap list --token-status       # Add source-labelled OAuth token diagnostics
-ccswap status                    # Show current account
-ccswap add --slot 3              # Add account to a specific slot (prompts before overwrite)
-ccswap add --alias dev           # Add account and give it a short alias
-ccswap remove 2                  # Remove an account
-ccswap disable 2                 # Hold an account out of auto-rotation (keeps its login)
-ccswap enable 2                  # Return a disabled account to rotation
-ccswap alias 2 dev               # Give an account a short alias (usable anywhere NUM|EMAIL is)
-ccswap alias 2 --unset           # Remove an account's alias
-ccswap alias                     # List all aliases
-ccswap move 2 1                  # Assign an account to a slot (relocates to an empty slot, swaps if taken)
-ccswap unclaimed                 # List stashed credential entries (slot + why they were stashed)
-ccswap unclaimed --purge ID      # Drop one (deletes its bytes; recover with /login + `ccswap add`)
-ccswap tui                       # Interactive dashboard (also: bare `ccswap`)
-ccswap watch                     # Dashboard, opened on the live watch page
-ccswap upgrade                   # Upgrade ccswap to the latest version
-ccswap purge                     # Remove all ccswap data
-```
-
-## Restarts and session behavior
-
-- **Do you need to restart after switching?** For **Claude Code**, usually not. On **Linux and Windows**, credentials are stored in a file and Claude Code re-reads them whenever that file changes, so the new account takes effect on your next message — no restart needed. On **macOS**, credentials live in the Keychain, which Claude Code caches for about 30 seconds; a running session picks up the switch once that cache expires. Restart Claude Code (or close and reopen the VS Code extension tab) only if you want the change to apply instantly.
-- **Codex always needs a restart.** Unlike Claude Code, the Codex CLI reads `auth.json` once when it starts and keeps the login in memory — it never re-reads the file or caches it on a timer. A running Codex session therefore keeps using the old account no matter what you swap underneath it. `ccswap codex switch` and `ccswap codex auto` write the selected login and tailor the reminder to your machine: if a Codex process is running they tell you to quit and relaunch it (or start a new session / reload the IDE extension); if none is running they confirm the account is ready for the next launch. This is a limitation of the Codex CLI, not ccswap — there is no flag, signal, or config setting that makes a live Codex reload credentials, and ccswap deliberately does not kill your running Codex process for you.
-- **Continuing sessions after switching:** You can keep using the same Claude Code session after switching — run `ccswap switch` in any terminal and carry on. If you'd prefer a clean start, close and reopen Claude Code (or the VS Code extension tab) and use `--resume` to pick your previous session. Either way, the first message on the new account may use extra usage as its conversation cache rebuilds.
-
-## How it works
-
-- Backs up provider credentials when you add an account
-- Swaps only the account-specific Claude login (or Codex's file-backed
-  `auth.json`) when you switch accounts; live account-independent OAuth state
-  (such as MCP server logins) is preserved instead of being overwritten by a
-  slot's older snapshot
-- Account credentials stored securely using platform-appropriate methods
-- Switches (manual and automatic) hold Claude Code's own credential locks while writing, so a swap never interleaves with a token refresh
-- Auto-switch freshens a target's token before activating it, and quarantines accounts whose refresh token has died (recover by re-adding it with `ccswap add --slot N`, or by replacing its stored credentials from a known-good export — a plain `ccswap import backup.cswap` replaces dead-token slots automatically)
-- Usage numbers refresh every few minutes — faster for an account being used or close to switching, slower for idle ones — keeping ccswap comfortably inside Anthropic's rate limits however many dashboards you keep open on a machine. An age note like `· 6m ago` just means the next scheduled check hasn't come yet, not that something is stuck.
-- Codex usage checks refresh inactive saved logins when possible; running Codex sessions must be restarted after a Codex account switch
-
-## Where ccswap stores data
-
-| Platform | Credentials | Config backups |
-|----------|-------------|----------------|
-| Windows | File-based (inside the backup directory, under `credentials/`) | `~/.claude-swap-backup/` |
-| macOS | macOS Keychain | `~/.claude-swap-backup/` |
-| Linux / WSL | File-based (inside the backup directory, under `credentials/`) | `${XDG_DATA_HOME:-~/.local/share}/claude-swap/` |
-
-Session-mode profiles (`ccswap run`) live under the backup directory in `sessions/`. Tool preferences (`settings.json`) and auto-switch state (`autoswitch_state.json` — cooldown and quarantined accounts; delete it to reset) live in the backup directory root.
-
-On Linux/WSL, set `XDG_DATA_HOME` to override the default location.
-
-## Menu bar (macOS)
-
-<details>
-<summary>Optional macOS menu bar app — usage at a glance, click to switch</summary>
-
-Needs the `menubar` extra (macOS only):
-
-```bash
-uv tool install 'ccswap[menubar]'   # or: pipx install 'ccswap[menubar]'
-ccswap menubar
-```
-
-Shows every account's 5h / 7d / spend usage and switches with a click (specific / rotate / best / next-available), plus the TUI's add / disable-enable / remove / refresh actions. Enable *Settings → Auto-switch accounts* to run the same engine as [`ccswap auto`](#automatic-switching-before-you-hit-a-rate-limit) in the background; it shares the `autoswitch.*` settings, so the menu bar and CLI stay in sync. Off until you turn it on.
-
-**Keep it running without a terminal.** `ccswap menubar` runs in the foreground, so the status item dies with the terminal that started it and does not come back after a reboot. `--install-service` hands it to launchd instead — starts at login, restarts on crash, no `.app` bundle:
-
-```bash
-ccswap menubar --install-service     # start now, and at every login
-ccswap menubar --service-status      # installed? loaded? pid?
-ccswap menubar --uninstall-service   # stop it and remove the plist
-```
-
-The agent lives at `~/Library/LaunchAgents/com.ccswap.menubar.plist` and logs to `~/Library/Logs/com.ccswap.menubar.{log,err}`. It pins the `ccswap` console script, whose path survives an upgrade — but the running process keeps the old build until it restarts, so after `ccswap upgrade` either re-run `--install-service` or `launchctl kickstart -k gui/$(id -u)/com.ccswap.menubar`.
-
-</details>
-
-## Claude Code statusline and mod
-
-<details>
-<summary>Optional: a statusline in ccswap's theme, and a <code>/ccswap</code> pane inside Claude Code</summary>
-
-Both are off until you turn them on, and each can be turned off again at any time.
-
-```bash
-ccswap config set claude.statusline on   # off puts back the statusline you had before
-ccswap config set claude.mod on          # off uninstalls the plugin
-```
-
-The same two switches are in the TUI's **Settings…** menu ("Claude statusline", "Claude Code mod") and in the menu bar's Settings menu. `ccswap config` shows their real state, read from Claude Code, so removing either by hand shows it as off.
-
-**Statusline.** Sets Claude Code's `statusLine` to `ccswap statusline`:
-
-```
-Opus 5.5 │ ✍️ 12% │ my-repo (main*) │ ⏱ 14m │ ◑ medium
-#2 you@work.com │ next: #1 1%
-5h ━━━───────  28% ⟳ 2:49pm
-7d ━━━━━━━───  70% ⟳ oct 11, 1:59pm
-```
-
-Line 1 is the model, context used, folder and git branch, session time and effort. Line 2 is the active ccswap account and the account with the most headroom. The bars use the usage Claude Code reports, falling back to ccswap's cache; the statusline itself never calls the network. Your previous `statusLine` is saved in ccswap's settings (per Claude config folder) and restored when you turn it off. ccswap refuses to touch a `settings.json` that isn't valid JSON.
-
-**Mod.** Installs the `ccswap` plugin from this repo's marketplace (`claude plugin marketplace add errhythm/ccswap`, then `claude plugin install ccswap@ccswap`). Needs Claude Code 2.1.287 or later with `claude` on your PATH. It adds:
-
-- `/ccswap`: lists accounts. `/ccswap best`, `/ccswap next` and `/ccswap 2` (or an email) switch. These answer at once, even while Claude is working.
-- `/ccswap pane`: a pane with four tabs. Press `c` Claude (usage bars, the slot's digit switches to it), `x` Codex, `h` History (recent switches), `s` Settings (threshold, strategy, binding windows, statusline). `r` refreshes, Esc closes.
-- A band above the prompt when the active account passes your auto-switch threshold, with a button to switch to the best account. Typing that digit into an empty prompt presses it.
-- A toast when the active account changes, for example after `ccswap auto` switches.
-
-<img src="assets/mod-pane-claude.png" width="760" alt="The ccswap pane in Claude Code: each account's 5h and 7d usage bars, emails masked, with a key to switch to #2">
-
-After turning the mod on or off, run `/reload-plugins` in any open Claude Code session. To install it by hand instead, run this at the Claude Code prompt:
-
-```
-/plugin install ccswap --marketplace errhythm/ccswap
-```
-
-</details>
-
-## Advanced
-
-### Configuration
-
-Tool preferences live in `settings.json` in the backup root; `ccswap config` reads and edits it with validation, so you never have to find the file or guess valid ranges.
-
-<details>
-<summary>Commands & usage</summary>
-
-```bash
-ccswap config                              # list effective settings ("(default)" = not set)
-ccswap config get autoswitch.threshold
-ccswap config set autoswitch.threshold 80  # validated: rejects out-of-range values loudly
-ccswap config set ui.view codex             # combined (default), claude, or codex
-ccswap config set ui.mask on                # hide emails and org names in the TUI, mod and statusline
-ccswap config set autoswitch.model Fable   # per-model switching (see "auto"); Fable,Opus for several
-ccswap config set autoswitch.threshold5h 85 # 5h gate; unset inherits autoswitch.threshold
-ccswap config set autoswitch.threshold7d 70 # weekly gate, independent of the 5h one
-ccswap config set autoswitch.modelThresholds Fable=40  # Fable gate; Fable=40,Opus=60 for several
-ccswap config set autoswitch.windows 5h    # switch on the session window only; 7d for weekly-only, both to reset
-ccswap config unset autoswitch.threshold   # back to the default
-ccswap config path                         # where settings.json lives
-```
-
-`ccswap config --help` lists every key with its valid range and default. Hand-editing the file still works — `ccswap config` is just a safer front door. `list` and `get` take `--json` for scripting.
-
-</details>
-
-### Backup and migration
-
-Move account data between machines or back it up:
-
-```bash
-ccswap export backup.cswap                    # All accounts to a file
-ccswap export backup.cswap --account 2        # One account
-ccswap export backup.cswap --full             # Include full ~/.claude.json and credential object (same-PC backup)
-ccswap import backup.cswap                    # Skips accounts that already exist
-ccswap import backup.cswap --force            # Overwrite existing
-```
-
-The export file is plaintext JSON and, by default, carries only each account's own login — machine-shared MCP/plugin OAuth tokens and the device token stay on the source machine (`--full` keeps everything, for same-PC backups). If you need encryption, pipe through your tool of choice (e.g. `ccswap export - | gpg -c > backup.gpg`).
-
-If an imported account is the one you're currently logged in as, activate the imported credentials with `ccswap switch N --force` (a plain `switch` to the current account is a safe no-op and won't touch the import).
-
-### Share usage readings between machines
-
-Machines that hold the same accounts can end up spending one usage-endpoint budget: when they share a login (moved between them with `export`/`import`, so the same token is live on each), or when the account's usage requests are limited per account rather than per token. Their polling then adds up. `import-usage` lets one machine poll and hand its readings to the others:
-
-```bash
-ccswap list --json | ssh laptop ccswap import-usage - --hold 600
-```
-
-<details>
-<summary>How it works — matching, holds & when a hold ends</summary>
-
-The input is `ccswap list --json` output (merged or `--provider claude`). Each row with `usageStatus: "ok"` is matched to a local account by email and organization, and adopted when it is newer than the reading already stored. Its age comes from `usageAgeSeconds`, so the two machines' clocks never have to agree; a script that delays the hand-over should add the delay to that field. `--hold SECONDS` keeps every collector on the receiving machine (`list`, `status`, `auto`, the dashboard, the menu bar) from fetching those accounts for that long, and the held reading stays trusted for switch decisions meanwhile. A hold never runs past the reading's earliest window reset (per-model windows included), nor past an hour after the reading was taken. Renew it with each hand-over, or lift it early with `--hold 0`; when it lapses, the machine goes back to fetching for itself.
-
-</details>
-
-### JSON output for scripting
-
-Add `--json` to `list`, `status`, or `switch` to emit a single machine-readable JSON object on stdout (human-readable notices go to stderr). Useful for scripting auto-swap and quota tracking.
-
-```bash
-ccswap list --json                   # BOTH providers, merged (default)
-ccswap list --provider claude --json # Claude Code accounts only (bare payload)
-ccswap list --provider codex --json  # Codex accounts only (bare payload)
-ccswap status --json                 # current active account
-ccswap switch --strategy best --json # switch, then report the result
-ccswap switch 2 --json
-```
-
-`ccswap list` now covers both providers by default. In `--json` mode that means the output is keyed by provider (`claude`/`codex`); pass `--provider claude` (or `codex`) to get a single provider's **bare** payload — the same shape older scripts already parse.
-
-<details>
-<summary>Example output & schema notes</summary>
-
-Merged (default) — `ccswap list --json`:
-
-```json
-{
-  "claude": {
-    "schemaVersion": 1,
-    "activeAccountNumber": 2,
-    "accounts": [
-      { "number": 2, "email": "you@example.com", "active": true, "usageStatus": "ok",
-        "usage": { "fiveHour": { "pct": 25.0, "resetsAt": "2026-06-22T23:29:59Z" },
-                   "sevenDay": { "pct": 16.0, "resetsAt": "2026-06-26T17:59:59Z" } } }
-    ]
-  },
-  "codex": {
-    "provider": "codex",
-    "activeAccountNumber": 1,
-    "accounts": [
-      { "number": 1, "email": "you@example.com", "authMode": "chatgpt",
-        "planType": "team", "label": "Codex Team", "active": true }
-    ]
-  }
-}
-```
-
-Single provider — `ccswap list --provider claude --json` — returns just the inner Claude object above (`schemaVersion`, `activeAccountNumber`, `accounts`), unchanged from before. **Migration:** scripts that parsed the old top-level `accounts` from `ccswap list --json` should switch to `ccswap list --provider claude --json`.
-
-Every Claude payload carries a `schemaVersion` (currently `1`); on a handled error stdout is `{"schemaVersion":1,"error":{...}}` with a non-zero exit code. `--switch`/`--switch-to` report `{"switched": true|false, "from": …, "to": …, "reason": …}`.
-
-A row carries an additive `loginExpiresAt` (ISO-8601 UTC) when the stored login records when its refresh token expires, which is the moment the slot will need a fresh `/login` and `ccswap add --slot N`; a script can warn a few days ahead instead of discovering `relogin_required`. Absent when Claude Code recorded no such date for that login.
-
-Usage is served from a per-account cache: when the usage API is briefly unreachable, the last-known numbers are shown instead of nothing (the human view marks them with their age, e.g. `· 2m ago`). Rows with decision-trusted usage carry additive `usageFetchedAt`/`usageAgeSeconds` fields telling you how old the measurement is. Whenever `usage` is null but a last-known measurement exists — data too old to drive a decision (`usageStatus` stays `unavailable`), or a row in a non-`ok` state such as `token_expired` — additive `lastGoodUsage`/`lastGoodFetchedAt`/`lastGoodAgeSeconds` fields preserve the human display without making the account actionable. When `usage` is null and nothing else explains it (`usageStatus` is `unavailable`), an additive `usageError` names the last fetch failure by kind (e.g. `http-429`, `timeout`) and, while the cache is backing off from it, `usageRetryAt` gives the time of the next attempt. These fields apply to list rows and the managed active row from `status --json`. An account held out of rotation with `ccswap disable` carries an additive `"disabled": true` on its row (absent otherwise).
-
-An account row also carries an additive `alias` field once one is set with `ccswap alias` (e.g. `"alias": "dev"`); accounts without one simply omit the key.
-
-Weekly windows (`sevenDay` and per-model `scoped` entries — never `fiveHour`) additively carry pace fields once the week is ~a day old: `expectedPct` (where usage would sit if spread evenly across the week) and `aheadOfPace` (`true` when meaningfully above that — the same signal the human views show as an `(ahead)`/`(ahead of pace)` marker). `projectedExhaustionAt`/`willLastToReset` extrapolate the current rate into an ETA to 100% and a yes/no "will it last to the reset"; they stay `--json`-only since a linear projection is too rough to present as fact in the UI.
-
-</details>
-
-`ccswap auto --json` emits an event *stream* instead — one JSON object per line (`{"schemaVersion":1,"event":"switch","ts":…, …}` with kinds like `poll`, `switch`, `no-switch`, `account-quarantined`, `all-exhausted`, `error`). The contract is additive: new kinds and fields may appear, so scripts should ignore unknown ones.
-
-### Add an account from a raw token or API key
-
-If you only have a long-lived setup-token (e.g., produced by `claude setup-token`)
-or a Console API key (`sk-ant-api03-...` workspace key, `sk-ant-usr-...` personal
-key, or a service-account key) and you don't want to log in via the browser
-flow first — useful on headless servers or when receiving a token from another
-machine — register it directly. The token type is auto-detected:
-
-```bash
-ccswap add-token sk-ant-oat01-...             # OAuth setup-token
-ccswap add-token sk-ant-api03-...             # API key (any Console key family)
-ccswap add-token sk-ant-oat01-... --slot 3
-ccswap add-token - --slot 3                   # read token from stdin
-ccswap add-token --email user@example.com     # optional label override
-```
-
-`--email` is optional; omitted values use `setup-token-{slot}@token.local`
-(or `api-key-{slot}@token.local` for API keys). No Anthropic API calls are made.
-
-**API-key accounts.** Any bare `sk-ant-...` value that is not an OAuth token
-(`sk-ant-oat...`) registers a managed API-key account (the kind Claude Code uses
-after `/login` with a key) rather than an OAuth setup-token. It switches like any
-other account; since API keys have no subscription quota, they show no usage and the
-usage-aware `switch` strategies never skip them as rate-limited. Create personal and
-service-account keys scoped to a single workspace: a multi-workspace key needs an
-`anthropic-workspace-id` header on every request, which Claude Code does not add for
-a stored key.
+- [Commands](https://github.com/errhythm/ccswap/blob/main/docs/commands.md): every command, expired tokens, adding a raw token or API key
+- [Automatic switching](https://github.com/errhythm/ccswap/blob/main/docs/auto-switching.md)
+- [Session mode](https://github.com/errhythm/ccswap/blob/main/docs/session-mode.md)
+- [Codex accounts](https://github.com/errhythm/ccswap/blob/main/docs/codex.md)
+- [Dashboard and menu bar](https://github.com/errhythm/ccswap/blob/main/docs/dashboard.md)
+- [Statusline and mod](https://github.com/errhythm/ccswap/blob/main/docs/statusline-and-mod.md)
+- [Configuration, backup and sharing](https://github.com/errhythm/ccswap/blob/main/docs/configuration.md)
+- [JSON output for scripting](https://github.com/errhythm/ccswap/blob/main/docs/json.md)
+- [How it works](https://github.com/errhythm/ccswap/blob/main/docs/how-it-works.md): restarts, credential handling, where data is stored
 
 ## Agent skill
 
-This repo ships an agent skill at `skills/ccswap-orchestration/` that teaches a coding agent (Claude Code, or any agent that supports skills) to make quota-aware decisions with ccswap: checking account headroom before a big fan-out, and picking a switch strategy under quota pressure.
-
-Install it with:
+`skills/ccswap-orchestration/` teaches a coding agent to check account headroom before a big fan-out and to pick a switch strategy under quota pressure:
 
 ```bash
 npx skills add errhythm/ccswap --skill ccswap-orchestration
 ```
 
-Or copy the directory directly into `~/.claude/skills/`.
-
-## Uninstall
-
-Remove all data:
+## Updating and uninstalling
 
 ```bash
-ccswap purge
+ccswap upgrade        # detects uv or pipx and upgrades
+
+ccswap purge          # remove all ccswap data, then:
+uv tool uninstall ccswap    # or: pipx uninstall ccswap
 ```
 
-Then uninstall the tool:
-
-```bash
-uv tool uninstall ccswap
-# or
-pipx uninstall ccswap
-```
+From source: `git clone https://github.com/errhythm/ccswap.git && cd ccswap && uv sync && uv run ccswap help`.
 
 ## Requirements
 
@@ -566,8 +90,12 @@ pipx uninstall ccswap
 - Claude Code and/or Codex CLI
 - A file-backed login for managed Codex accounts
 
+## Support
+
+If ccswap saved you from a rate limit, a ⭐ on [GitHub](https://github.com/errhythm/ccswap) helps other people find it. Bugs and ideas go in [issues](https://github.com/errhythm/ccswap/issues).
+
 ## License and credits
 
 `ccswap` began as a fork of [claude-swap (`cswap`)](https://github.com/realiti4/claude-swap) by Onur Cetinkol, and still carries the original MIT license and credit for that. Since then it's grown into its own project: no more tracking upstream, no `cswap` compatibility, its own package and release line, and adds Codex support. It's MIT-licensed too, so fork it, file issues, send PRs — whatever's useful to you.
 
-MIT. This fork retains the original project's copyright and license notice; see [LICENSE](LICENSE). Upstream: [realiti4/claude-swap](https://github.com/realiti4/claude-swap).
+MIT. This fork retains the original project's copyright and license notice; see [LICENSE](https://github.com/errhythm/ccswap/blob/main/LICENSE). Upstream: [realiti4/claude-swap](https://github.com/realiti4/claude-swap).

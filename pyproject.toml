@@ -64,6 +64,7 @@ menubar = ["rumps>=0.4.0"]
 [project.urls]
 Homepage = "https://github.com/errhythm/ccswap"
 Repository = "https://github.com/errhythm/ccswap"
+Documentation = "https://github.com/errhythm/ccswap/tree/main/docs"
 Issues = "https://github.com/errhythm/ccswap/issues"
 PyPI = "https://pypi.org/project/ccswap/"
 Changelog = "https://github.com/errhythm/ccswap/releases"
