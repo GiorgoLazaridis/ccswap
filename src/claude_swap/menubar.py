@@ -38,7 +38,7 @@ REFRESH_CHOICES: tuple[int, ...] = (30, 60, 300)
 AUTO_THRESHOLD_CHOICES: tuple[int, ...] = (80, 90, 95, 98)
 TITLE_PCT_CHOICES: tuple[str, ...] = ("off", "5h", "7d", "both")
 SWITCH_HISTORY_LIMIT = 10
-NOTIFICATION_BUNDLE_ID = "com.claude-swap.menubar"
+NOTIFICATION_BUNDLE_ID = "com.ccswap.menubar"
 
 
 def ensure_notification_identity(
