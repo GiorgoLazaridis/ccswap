@@ -5487,6 +5487,61 @@ class ClaudeAccountSwitcher:
             return None, "exhausted"
         return None, "stay"
 
+    def _select_consume_first_switchable(
+        self,
+        current_num: str | None,
+        models: tuple[str, ...] = (),
+        usage: dict | None = None,
+    ) -> tuple[str | None, str]:
+        """Decide the ``consume-first`` strategy target.
+
+        Picks the account whose weekly (7d) window resets soonest among those
+        with headroom left, current included, even when it has less headroom
+        than a peer: quota left at a reset is lost, so the most perishable
+        quota goes first. Same ranking as ``ccswap auto``'s consume-first.
+        A past ``resets_at`` counts as unknown (a stale snapshot would
+        otherwise rank the account that just rolled over as soonest).
+
+        When no account with headroom has a known weekly reset there is
+        nothing to rank by, so this falls back to
+        :meth:`_select_best_switchable` and returns its ``(target, note)``.
+        Otherwise returns ``(num, "")`` to switch or ``(None, "soonest-reset")``
+        when the current account already resets soonest. Ties go to the current
+        account, then to the earliest slot.
+        """
+        data = self._get_sequence_data() or {}
+        others = [
+            str(n) for n in data.get("sequence", [])
+            if str(n) != str(current_num)
+            and self._account_is_switchable(str(n))
+            and not self._disabled_from_data(data, str(n))
+        ]
+        if not others:
+            return None, "none"
+
+        if usage is None:
+            usage = self._usage_by_account()
+        now = time.time()
+        ranked = []
+        for num in [str(current_num), *others]:
+            u = usage.get(num)
+            headroom = oauth.account_headroom(u, models)
+            window = u.get("seven_day") if isinstance(u, dict) else None
+            reset = (
+                poll_policy.parse_reset_ts(window.get("resets_at"))
+                if isinstance(window, dict) else None
+            )
+            if headroom is not None and headroom > 0 and reset is not None and reset > now:
+                ranked.append((reset, num))
+        if not ranked:
+            return self._select_best_switchable(current_num, models, usage)
+
+        # min() keeps the first minimal element: current, then rotation order.
+        _reset, target = min(ranked, key=lambda t: t[0])
+        if target == str(current_num):
+            return None, "soonest-reset"
+        return target, ""
+
     def _duplicate_account_warnings(
         self, accounts_info: list[tuple[int, str, str, str, bool, str, str]]
     ) -> list[str]:
@@ -5952,7 +6007,10 @@ class ClaudeAccountSwitcher:
             strategy: Usage-aware target selection. ``"best"`` jumps to the
                   switchable account with the most remaining 5h/7d quota instead
                   of advancing the rotation; ``"next-available"`` rotates to the
-                  next account, skipping any currently at its 5h/7d limit. ``None``
+                  next account, skipping any currently at its 5h/7d limit;
+                  ``"consume-first"`` jumps to the account with headroom whose
+                  weekly window resets soonest (see
+                  ``_select_consume_first_switchable``). ``None``
                   (the default) performs a plain rotation.
             models: Per-model weekly windows folded into every usage
                   comparison of the usage-aware strategies (parsed display
@@ -5970,7 +6028,10 @@ class ClaudeAccountSwitcher:
         normal path (a live Claude login present); the fresh-machine path (no
         live login, e.g. right after --import) ignores them.
         """
-        strategy_label = strategy if strategy in ("best", "next-available") else "rotation"
+        strategy_label = (
+            strategy if strategy in ("best", "next-available", "consume-first")
+            else "rotation"
+        )
         warnings: list[str] = []
         if strategy_label == "rotation":
             models = ()  # model limits only steer the usage-aware strategies
@@ -6097,12 +6158,16 @@ class ClaudeAccountSwitcher:
         # Usage-aware "jump to most headroom". Only switches when another
         # account is provably better; otherwise stays put (never moves onto a
         # worse or unverifiable account). Bare `cswap --switch` rotates anyway.
-        if strategy == "best":
+        # "consume-first" shares this path: it ranks by soonest weekly reset
+        # instead, and adds the "soonest-reset" stay below.
+        if strategy in ("best", "consume-first"):
             best_usage = self._usage_by_account()
             self._warn_inert_models(best_usage, models, json_output, warnings)
-            target, note = self._select_best_switchable(
-                current_num, models, best_usage
+            select = (
+                self._select_consume_first_switchable if strategy == "consume-first"
+                else self._select_best_switchable
             )
+            target, note = select(current_num, models, best_usage)
             if target is not None:
                 op = self._perform_switch(target, emit_output=not json_output)
                 return (
@@ -6166,6 +6231,21 @@ class ClaudeAccountSwitcher:
                     )
                 print(
                     f"{accent('Already on the account with the most remaining quota')} "
+                    f"(Account-{current_num})."
+                )
+                return None
+            if note == "soonest-reset":
+                msg = (
+                    f"Already on the account whose weekly limit resets soonest "
+                    f"(Account-{current_num})."
+                )
+                if json_output:
+                    return self._switch_noop(
+                        strategy=strategy_label, reason="already-best",
+                        to_ref=current_ref, warnings=warnings, message=msg,
+                    )
+                print(
+                    f"{accent('Already on the account whose weekly limit resets soonest')} "
                     f"(Account-{current_num})."
                 )
                 return None

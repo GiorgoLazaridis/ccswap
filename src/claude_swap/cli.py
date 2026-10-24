@@ -1279,6 +1279,7 @@ Aliases: ls=list  rm=remove  update=upgrade""",
         epilog="""Flags combine with subcommands:
   %(prog)s switch --strategy best           # pick the account with most quota left
   %(prog)s switch --strategy next-available # rotate, skipping rate-limited accounts
+  %(prog)s switch --strategy consume-first  # use the soonest-resetting weekly quota first
   %(prog)s switch user@example.com
   %(prog)s list --token-status
   %(prog)s list --json
@@ -1332,12 +1333,14 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
     )
     parser.add_argument(
         "--strategy",
-        choices=["best", "next-available"],
-        metavar="{best,next-available}",
+        choices=["best", "next-available", "consume-first"],
+        metavar="{best,next-available,consume-first}",
         help=(
             "With bare 'switch': pick the target by remaining 5h/7d quota. "
             "'best' jumps to the account with the most headroom; "
-            "'next-available' rotates to the next account, skipping any at their limit"
+            "'next-available' rotates to the next account, skipping any at their limit; "
+            "'consume-first' jumps to the account with headroom whose weekly "
+            "window resets soonest, so no quota is lost at a reset"
         ),
     )
     parser.add_argument(
@@ -1567,8 +1570,8 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
         # Meaningless on a direct-target switch or plain rotation — nothing
         # usage-aware reads it there, so reject loudly rather than ignore.
         parser.error(
-            "--model can only be used with 'switch --strategy best' or "
-            "'switch --strategy next-available'"
+            "--model can only be used with 'switch --strategy best', "
+            "'next-available' or 'consume-first'"
         )
 
     if args.slot is not None and not (args.add_account or args.add_token is not None):

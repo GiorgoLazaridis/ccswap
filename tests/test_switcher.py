@@ -5919,6 +5919,65 @@ class TestUsageAwareSwitch:
 
         assert s._get_sequence_data()["activeAccountNumber"] == 3
 
+    @staticmethod
+    def _usage_reset(pct: float, hours: float | None) -> dict:
+        resets_at = (
+            None if hours is None
+            else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + hours * 3600))
+        )
+        return {
+            "five_hour": {"pct": 0.0},
+            "seven_day": {"pct": pct, "resets_at": resets_at},
+        }
+
+    def test_consume_first_picks_soonest_reset_over_more_headroom(self, temp_home: Path):
+        s = self._setup(temp_home)
+        self._seed(s, 1, "a@example.com")
+        self._seed(s, 2, "b@example.com")
+        self._seed(s, 3, "c@example.com")
+        self._make_live(temp_home, "a@example.com", 1)
+
+        # 2 has the least headroom but resets first; 3 resets soon too but is spent.
+        usage = {
+            "1": self._usage_reset(10, 100),
+            "2": self._usage_reset(80, 20),
+            "3": self._usage_reset(100, 5),
+        }
+        with patch.object(s, "_usage_by_account", return_value=usage), \
+             patch.object(s, "list_accounts"):
+            s.switch(strategy="consume-first")
+
+        assert s._get_sequence_data()["activeAccountNumber"] == 2
+
+    def test_consume_first_stays_when_current_resets_soonest(self, temp_home: Path, capsys):
+        s = self._setup(temp_home)
+        self._seed(s, 1, "a@example.com")
+        self._seed(s, 2, "b@example.com")
+        self._make_live(temp_home, "a@example.com", 1)
+
+        usage = {"1": self._usage_reset(90, 10), "2": self._usage_reset(0, 50)}
+        with patch.object(s, "_usage_by_account", return_value=usage), \
+             patch.object(s, "list_accounts") as mock_list:
+            s.switch(strategy="consume-first")
+
+        assert "resets soonest" in capsys.readouterr().out
+        assert s._get_sequence_data()["activeAccountNumber"] == 1
+        mock_list.assert_not_called()
+
+    def test_consume_first_falls_back_to_best_without_reset_times(self, temp_home: Path):
+        s = self._setup(temp_home)
+        self._seed(s, 1, "a@example.com")
+        self._seed(s, 2, "b@example.com")
+        self._make_live(temp_home, "a@example.com", 1)
+
+        # A past reset counts as unknown, so ranking falls back to headroom.
+        usage = {"1": self._usage_reset(90, -1), "2": self._usage_reset(10, None)}
+        with patch.object(s, "_usage_by_account", return_value=usage), \
+             patch.object(s, "list_accounts"):
+            s.switch(strategy="consume-first")
+
+        assert s._get_sequence_data()["activeAccountNumber"] == 2
+
     def test_best_stays_when_current_is_already_best(self, temp_home: Path, capsys):
         """Regression: strategy "best" must NOT move you onto a worse account when you
         already hold the most headroom (real-world bug: 89% current vs 100% other)."""
