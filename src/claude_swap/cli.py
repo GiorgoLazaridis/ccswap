@@ -1624,6 +1624,7 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
     # JSON-capable commands return a payload; the CLI is the single point that
     # serializes it (so no command writes JSON to stdout itself).
     payload: dict | None = None
+    switched_from: str | None = None  # active slot before a switch, for the star prompt
     try:
         switcher = ClaudeAccountSwitcher(debug=args.debug)
 
@@ -1662,6 +1663,7 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
             else:
                 models = parse_model_names(load_settings(switcher.backup_dir).model)
                 model_source = "autoswitch.model" if models else None
+            switched_from = (switcher._get_sequence_data() or {}).get("activeAccountNumber")
             payload = switcher.switch(
                 strategy=args.strategy,
                 json_output=args.json,
@@ -1672,6 +1674,7 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
                 payload["models"] = list(models)
                 payload["modelSource"] = model_source
         elif args.switch_to:
+            switched_from = (switcher._get_sequence_data() or {}).get("activeAccountNumber")
             payload = switcher.switch_to(
                 args.switch_to, json_output=args.json, force=args.force
             )
@@ -1730,6 +1733,11 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
 
     if args.json and payload is not None:
         print(json.dumps(payload, indent=2))
+
+    if switched_from is not None and not args.json:
+        from claude_swap.star_prompt import maybe_ask
+
+        maybe_ask(switcher, str(switched_from))
 
     # Passive update notification (never fails). Skipped after --purge so we
     # don't immediately recreate <backup_root>/cache/update_check.json inside
