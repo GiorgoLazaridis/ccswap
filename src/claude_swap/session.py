@@ -399,8 +399,12 @@ def read_config_dir_credentials(
     *,
     strict_keychain: bool = False,
     keychain_service: str | None = None,
+    use_keychain: bool = True,
 ) -> str | None:
     """Same read for an arbitrary ``CLAUDE_CONFIG_DIR`` value.
+
+    ``use_keychain=False`` skips the Keychain and reads only the plaintext
+    file, for the explicit ``credentials.backend = file`` mode.
 
     Takes the raw string rather than a ``Path``: claude derives the keychain
     service name from the exported value verbatim, so a ``Path`` round-trip —
@@ -427,7 +431,7 @@ def read_config_dir_credentials(
     directory = Path(config_dir)
     if not directory.is_dir():
         return None
-    if Platform.detect() == Platform.MACOS:
+    if use_keychain and Platform.detect() == Platform.MACOS:
         for service in _keychain_services(config_dir, keychain_service):
             try:
                 creds = _keychain_entry(service, strict_keychain)

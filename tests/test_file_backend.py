@@ -651,25 +651,81 @@ class TestUnorderableLogins:
 
 
 class TestHandEditedFileMode:
-    """settings.json edited by hand skips `config set`; account operations
-    must still refuse, while `config set ... auto` stays the way back."""
+    """settings.json edited by hand skips `config set`; a switch onto a
+    Keychain-only account must still refuse, while `config set ... auto`
+    stays the way back."""
 
-    def test_switch_and_export_refuse_keychain_only_accounts(
+    def test_switch_to_keychain_only_account_refuses(
         self, temp_home: Path, on_macos, capsys
     ):
-        from claude_swap.transfer import export_accounts
-
         _seed_accounts(["a@example.com", "b@example.com"], with_enc={"a@example.com"})
         _use_file_backend()
         s = _macos_switcher()
         with pytest.raises(ConfigError, match="b@example.com"):
-            s._perform_switch("1")
-        with pytest.raises(ConfigError, match="b@example.com"):
-            export_accounts(s, str(temp_home / "out.cswap"))
+            s._perform_switch("2")
 
         code, _, _ = _config(["set", "credentials.backend", "auto"], capsys)
         assert code == 0
         assert _backend_on_disk() == "auto"
+
+    def test_a_bad_slot_does_not_block_switching_to_a_healthy_one(
+        self, temp_home: Path, on_macos
+    ):
+        _seed_accounts(["a@example.com", "b@example.com"], with_enc={"a@example.com"})
+        _use_file_backend()
+        s = _macos_switcher()
+        s._require_file_backup("1")  # no raise: only the target is checked
+
+
+class TestCaptureWithCustomProfile:
+    """`ccswap add` under CLAUDE_CONFIG_DIR reads the profile's credentials
+    through session.read_config_dir_credentials, which must honor file mode."""
+
+    def _work_profile(self, temp_home: Path, monkeypatch) -> Path:
+        work = temp_home / "work"
+        work.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(work))
+        monkeypatch.delenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", raising=False)
+        (work / ".claude.json").write_text(json.dumps({
+            "oauthAccount": {"emailAddress": "w@example.com", "accountUuid": "u1"},
+        }))
+        (work / ".credentials.json").write_text(ACTIVE_CREDS)
+        return work
+
+    def test_add_never_asks_a_locked_keychain(
+        self, temp_home: Path, on_macos, locked_keychain, monkeypatch
+    ):
+        self._work_profile(temp_home, monkeypatch)
+        _use_file_backend()
+        s = _macos_switcher()
+        s.add_account()
+        assert locked_keychain.calls == []
+        assert s._read_account_credentials("1", "w@example.com") == ACTIVE_CREDS
+
+    def test_add_ignores_a_stale_keychain_item(
+        self, temp_home: Path, on_macos, block_real_keychain, monkeypatch
+    ):
+        from claude_swap.session import keychain_service_name
+
+        work = self._work_profile(temp_home, monkeypatch)
+        acct = macos_keychain.keychain_account_name()
+        block_real_keychain.data[(keychain_service_name(str(work)), acct)] = OLD
+        _use_file_backend()
+        s = _macos_switcher()
+        s.add_account()
+        assert s._read_account_credentials("1", "w@example.com") == ACTIVE_CREDS
+
+
+class TestNonObjectKeychainValue:
+    def test_config_set_does_not_crash(
+        self, temp_home: Path, on_macos, block_real_keychain, capsys
+    ):
+        _seed_keychain_login(block_real_keychain, "[1]")
+        _write_active_file(ACTIVE_CREDS)
+        code, out, err = _config(["set", "credentials.backend", "file"], capsys)
+        assert code != 0  # can't compare: refused, not crashed
+        assert "Traceback" not in out + err
+        assert "Cannot set credentials.backend to file" in out + err
 
 
 class TestSessionModeRefused:

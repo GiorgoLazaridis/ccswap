@@ -185,7 +185,6 @@ def export_accounts(
         TransferError: malformed/missing data, unknown account.
         CredentialReadError: failed to read credentials.
     """
-    switcher._require_file_backups()
     sequence_data = switcher._get_sequence_data_migrated()
     if not sequence_data or not sequence_data.get("accounts"):
         raise TransferError("no accounts to export — run ccswap --add-account first")

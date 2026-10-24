@@ -771,6 +771,7 @@ class ClaudeAccountSwitcher:
                 secure_env or str(get_default_claude_config_home()),
                 strict_keychain=True,
                 keychain_service=CLAUDE_CODE_KEYCHAIN_SERVICE if not secure_env else None,
+                use_keychain=self._store._keychain_platform(),
             )
             if creds:
                 return creds
@@ -785,7 +786,10 @@ class ClaudeAccountSwitcher:
         elif not config_dir:
             return self._refuse_degraded_capture()
         else:
-            creds = read_config_dir_credentials(config_dir, strict_keychain=True)
+            creds = read_config_dir_credentials(
+                config_dir, strict_keychain=True,
+                use_keychain=self._store._keychain_platform(),
+            )
             if creds:
                 return creds
             if _same_directory(Path(config_dir), get_default_claude_config_home()):
@@ -894,20 +898,20 @@ class ClaudeAccountSwitcher:
         if state in ("unreadable", "differs", "keychain-newer"):
             self._warn_residual_keychain_items()
 
-    def _require_file_backups(self) -> None:
-        """In file mode, refuse an account operation that would need the
-        Keychain. Covers a ``settings.json`` edited by hand, which skips the
-        ``config set`` check; kept out of ``__init__`` so ``config set
-        credentials.backend auto`` still works as the way back."""
+    def _require_file_backup(self, account_num: str) -> None:
+        """In file mode, refuse switching to an account whose backup exists only
+        in the Keychain. Covers a ``settings.json`` edited by hand, which skips
+        the ``config set`` check. Only the target is checked, so one bad slot
+        doesn't block switching between healthy ones; kept out of ``__init__``
+        so ``config set credentials.backend auto`` still works as the way back."""
         if self.platform != Platform.MACOS or self.credential_backend != "file":
             return
-        missing = self._accounts_without_file_backup()
+        missing = self._accounts_without_file_backup({str(account_num)})
         if missing:
             raise ConfigError(
-                "credentials.backend is file, but these managed accounts have no "
-                f"usable file backup: {', '.join(missing)}. Run `ccswap config set "
-                "credentials.backend auto` from a GUI terminal, or remove and "
-                "re-add them."
+                f"credentials.backend is file, but {missing[0]} has no usable file "
+                "backup. Run `ccswap config set credentials.backend auto` from a "
+                "GUI terminal, or remove and re-add the account."
             )
 
     def _keychain_login_vs_file(self) -> tuple[str, str]:
@@ -917,8 +921,9 @@ class ClaudeAccountSwitcher:
         Claude Code is using the file), ``"absent"``, ``"no-file"`` (Keychain
         login but no OAuth login in the file, so nothing there to copy or
         protect), ``"same"``, ``"keychain-newer"``, ``"file-newer"``, or
-        ``"differs"`` when the two can't be ordered. Calls the Keychain wrapper directly so this probe never
-        changes the credential store's view of Keychain usability.
+        ``"differs"`` when the two can't be ordered. Calls the Keychain wrapper
+        directly so this probe never changes the credential store's view of
+        Keychain usability.
         """
         from claude_swap.credentials import _active_oauth_keychain_services
 
@@ -936,10 +941,13 @@ class ClaudeAccountSwitcher:
                 file_login = _oauth_login(text)
                 if not file_login:
                     return "no-file", service
+                keychain_login = _oauth_login(value)
+                if not keychain_login:
+                    return "differs", service  # not an OAuth login: can't compare
                 if oauth.credential_fingerprint(value) == oauth.credential_fingerprint(text):
                     return "same", service
                 # A newer token generation expires later; that orders the two.
-                kc_exp = (_oauth_login(value) or {}).get("expiresAt")
+                kc_exp = keychain_login.get("expiresAt")
                 file_exp = file_login.get("expiresAt")
                 if (
                     isinstance(kc_exp, (int, float))
@@ -950,13 +958,16 @@ class ClaudeAccountSwitcher:
                 return "differs", service
         return "absent", ""
 
-    def _accounts_without_file_backup(self) -> list[str]:
-        """Emails of managed accounts whose ``.enc`` backup is missing or unusable."""
+    def _accounts_without_file_backup(self, only: set[str] | None = None) -> list[str]:
+        """Emails of managed accounts (all, or just ``only``) whose ``.enc``
+        backup is missing or unusable."""
         data = self._get_sequence_data()
         if not data:
             return []
         missing: list[str] = []
         for account_num, info in data.get("accounts", {}).items():
+            if only is not None and str(account_num) not in only:
+                continue
             email = info.get("email", "")
             backup = self._backup_enc_path(str(account_num), email)
             # Decode exactly as the file-mode read will: a non-empty but corrupt
@@ -7085,7 +7096,7 @@ class ClaudeAccountSwitcher:
         from claude_swap.session import scan_live_sessions
 
         self._refuse_session_shell()
-        self._require_file_backups()
+        self._require_file_backup(target_account)
         warnings_out: list[str] = []
         # Session-mode drift. Switching the default login to an account that
         # also has a live session profile puts the same refresh token in two
