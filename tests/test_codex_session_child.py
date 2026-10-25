@@ -136,7 +136,7 @@ def test_config_paths(tmp_path, key, managed, private):
         return
     result = session.child_argv([], home, config_layers=layers)
     default = home if key == 'sqlite_home' else home / 'log'
-    expected = [] if private else ['-c', key + '=' + json.dumps(str(default))]
+    expected = [] if private else ['-c', key + '=' + json.dumps(str(default.resolve()))]
     assert result == ['--no-daemon'] + STORES + expected
 
 
@@ -150,7 +150,8 @@ def test_last_override_and_delimiter(tmp_path, key):
     args = ['exec', '-c', private, '--config=' + escape, '--', 'prompt']
     result = session.child_argv(args, home, config_layers=[])
     default = home if key == 'sqlite_home' else home / 'log'
-    assert result == STORES + args[:-2] + ['-c', key + '=' + json.dumps(str(default))] + args[-2:]
+    expected = ['-c', key + '=' + json.dumps(str(default.resolve()))]
+    assert result == STORES + args[:-2] + expected + args[-2:]
 
 
 def test_relative_config_layer_and_precedence(tmp_path):
@@ -173,7 +174,8 @@ def test_symlink_escape(tmp_path):
     assert 'CODEX_SQLITE_HOME' not in result
     assert warnings == ['Removed CODEX_SQLITE_HOME.']
     layers = [(home / 'config.toml', {'sqlite_home': value}, False)]
-    assert session.child_argv([], home, config_layers=layers)[-1] == 'sqlite_home=' + json.dumps(str(home))
+    expected = 'sqlite_home=' + json.dumps(str(home.resolve()))
+    assert session.child_argv([], home, config_layers=layers)[-1] == expected
     with pytest.raises(SessionError):
         session.child_argv([], home, config_layers=[(home / 'config.toml', {'log_dir': value}, True)])
 
@@ -206,7 +208,7 @@ def test_relative_sqlite_env_pinned_before_cd(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     home = tmp_path / 'home'
     result, warnings = session.child_env({'CODEX_SQLITE_HOME': ' home/db '}, home)
-    assert result['CODEX_SQLITE_HOME'] == str(home / 'db')
+    assert result['CODEX_SQLITE_HOME'] == str((home / 'db').resolve())
     assert warnings == []
 
 
@@ -387,7 +389,7 @@ def test_child_env_explicit_spawn_cwd(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     env, warnings = child_env({"CODEX_SQLITE_HOME": "home"}, home, cwd=tmp_path)
-    assert env["CODEX_SQLITE_HOME"] == str(home)
+    assert env["CODEX_SQLITE_HOME"] == str(home.resolve())
     assert warnings == []
 
 
@@ -407,6 +409,16 @@ def test_explicit_cd_not_pinned_twice(tmp_path, form, cd):
     args = cd + form
     assert session.child_argv(args, tmp_path, config_layers=[]) == (
         ['--no-daemon'] + STORES + args)
+
+
+@pytest.mark.parametrize('args,has_cd', [
+    (['resume', '--last', '--cd', 'x'], True),
+    (['resume', '--', '-C', 'x'], False),
+])
+def test_resume_cd_option_and_prompt_boundary(tmp_path, args, has_cd):
+    assert session._child_has_cd(args) is has_cd
+    prefix = ['--no-daemon'] if has_cd else pinned()
+    assert session.child_argv(args, tmp_path, config_layers=[]) == prefix + STORES + args
 
 
 @pytest.mark.parametrize('key', ['sqlite_home', 'log_dir'])

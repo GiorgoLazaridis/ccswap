@@ -1,6 +1,7 @@
 """Supervisor transaction tests: fake writers, native processes and policy sources."""
 
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,6 +16,12 @@ from tests.test_codex_session import auth
 @pytest.fixture
 def run(custody, monkeypatch, tmp_path):
     switcher, home, baseline = custody
+    # This fixture models POSIX Popen; Windows job tests override it explicitly.
+    class PosixSys:
+        platform = "linux"
+        def __getattr__(self, name):
+            return getattr(sys, name)
+    monkeypatch.setattr(cs, "sys", PosixSys())
     switcher.lock_file = switcher.backup_dir / ".lock"
     switcher.auth_file = switcher.codex_home / "auth.json"
     cwd = tmp_path / "project"
@@ -24,8 +31,20 @@ def run(custody, monkeypatch, tmp_path):
     monkeypatch.setattr(codex_binary, "resolve_codex_binary", lambda env: ["/fake/codex"])
     monkeypatch.setattr(codex_binary, "probe_codex", lambda binary: None)
     monkeypatch.setattr(cs, "_system_policy_paths", lambda: [])
+    # Windows temp roots can be below the real user's .codex project layer.
+    project_paths = cs._project_policy_paths
+    monkeypatch.setattr(cs, "_project_policy_paths", lambda cwd: [
+        path for path in project_paths(cwd) if path.is_relative_to(tmp_path)])
     monkeypatch.setattr(cs, "_run_subreaper", lambda: None)
     monkeypatch.setattr(cs, "_run_reap", lambda: None)
+    import signal
+    monkeypatch.setattr(signal, "SIGHUP", 1, raising=False)
+    handlers = {}
+    def install(signum, handler):
+        previous = handlers.get(signum, signal.SIG_DFL)
+        handlers[signum] = handler
+        return previous
+    monkeypatch.setattr(signal, "signal", install)
     monkeypatch.setattr(cs, "_run_identity", lambda pid: {
         "pid": pid, "start": {"kind": "linux", "bootId": "boot", "ticks": "1"}})
     monkeypatch.setattr(switcher, "_read_switch_auth", lambda: state.default)
@@ -254,6 +273,8 @@ def test_shared_generation_conflict_preserves_files(run):
 
 def test_signal_forwarding_and_restore(monkeypatch):
     import signal
+    monkeypatch.setattr(cs, "sys", SimpleNamespace(platform="linux"))
+    monkeypatch.setattr(signal, "SIGHUP", 1, raising=False)
     handlers, sent = {}, []
     def install(signum, handler):
         previous = handlers.get(signum, "original")
@@ -424,11 +445,12 @@ def test_linux_subreaper_prctl(monkeypatch, result):
     assert calls == [(36, 1, 0, 0, 0)]
 
 
-def test_windows_wait_ignores_console_interrupts(monkeypatch):
+@pytest.mark.parametrize("original", [None, "original"])
+def test_windows_wait_ignores_console_interrupts(monkeypatch, original):
     import signal
     handlers = {}
     def install(signum, handler):
-        previous = handlers.get(signum, "original")
+        previous = handlers.get(signum, original)
         handlers[signum] = handler
         return previous
     monkeypatch.setattr(signal, "signal", install)
@@ -439,7 +461,7 @@ def test_windows_wait_ignores_console_interrupts(monkeypatch):
         assert handlers[signal.SIGINT] is signal.SIG_IGN and handlers[21] is signal.SIG_IGN
         return 3
     assert cs._run_wait(SimpleNamespace(wait=wait)) == 3
-    assert set(handlers.values()) == {"original"}
+    assert set(handlers.values()) == {signal.SIG_DFL if original is None else original}
 
 
 def test_live_default_alias_does_not_block_other_account(run, monkeypatch):
@@ -464,3 +486,88 @@ def test_capture_failure_after_exit_is_not_reported_as_unstarted(run, monkeypatc
     assert run.invoke() == 1
     err = capsys.readouterr().err
     assert "Codex exited, but the session capture failed" in err and "not started" not in err
+
+
+@pytest.mark.parametrize("args", [
+    ["--worktree"], ["--worktree", "resume", "--last"],
+    ["resume", "--last", "-c", 'sqlite_home="db"'],
+    ["fork", "thread", "-c", 'log_dir="logs"'],
+    ["exec", "resume", "--last", "-c", 'sqlite_home="db"'],
+])
+def test_unsupported_syntax_has_no_side_effects(run, monkeypatch, args):
+    from claude_swap import locking
+
+    before = {p: p.read_bytes() for p in run.home.rglob("*") if p.is_file()}
+    def unexpected(*args, **kwargs):
+        pytest.fail("syntax rejection must precede probes, locks and bootstrap")
+    monkeypatch.setattr(codex_binary, "resolve_codex_binary", unexpected)
+    monkeypatch.setattr(locking, "FileLock", unexpected)
+    monkeypatch.setattr(cs, "bootstrap_home", unexpected)
+    assert run.invoke(codex_args=args) == 2
+    assert not run.spawned
+    assert {p: p.read_bytes() for p in run.home.rglob("*") if p.is_file()} == before
+
+
+def test_run_layers_orders_project_configs_root_first(run, monkeypatch):
+    outer = run.cwd / ".codex" / "config.toml"
+    inner_dir = run.cwd / "nested"
+    inner = inner_dir / ".codex" / "config.toml"
+    for path, model in ((outer, "outer"), (inner, "inner")):
+        path.parent.mkdir(parents=True)
+        path.write_text(f'model = "{model}"')
+    monkeypatch.setattr(cs, "_system_policy_paths", lambda: [])
+    layers = cs._run_layers(run.home, inner_dir)
+    assert [(path, table, managed) for path, table, managed in layers
+            if path in {outer, inner}] == [
+        (outer, {"model": "outer"}, False), (inner, {"model": "inner"}, False),
+    ]
+
+
+def test_finish_custody_conflict_reports_retained_evidence(run, capsys):
+    run.after = "conflict"
+    before = (run.home / "auth.json").read_bytes()
+    assert run.invoke() == 1
+    err = capsys.readouterr().err
+    assert "session/backup identity or generation conflict" in err
+    assert f"files retained at {run.home}" in err
+    assert "Reconcile the login explicitly before retrying" in err
+    assert "liveness is uncertain" not in err
+    assert (run.home / "auth.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("previous", [None, "original"])
+@pytest.mark.parametrize("fail", [False, True])
+def test_interrupt_guard_covers_finish_and_restores(run, monkeypatch, previous, fail):
+    import signal
+
+    handlers = {}
+    def install(signum, handler):
+        old = handlers.get(signum, previous)
+        handlers[signum] = handler
+        return old
+    monkeypatch.setattr(signal, "signal", install)
+    monkeypatch.setattr(signal, "SIGBREAK", 21, raising=False)
+    monkeypatch.setattr(cs, "_run_identity", lambda pid: {
+        "pid": pid, "start": {"kind": "windows", "creationTime100ns": "1"}})
+    monkeypatch.setattr(cs, "_run_notice", lambda message: None)
+    checked = []
+    def finish(*args):
+        assert handlers[signal.SIGINT] is signal.SIG_IGN
+        assert handlers[signal.SIGBREAK] is signal.SIG_IGN
+        checked.append(True)
+        if fail:
+            raise cs.SessionError("synthetic finish failure")
+        return 0
+    monkeypatch.setattr(cs, "_run_finish", finish)
+    from claude_swap import windows_job
+    def launch(binary, args, env, cwd, run_id, callback):
+        callback(54321, {"kind": "windows", "creationTime100ns": "2"})
+        run.spawned.append(True)
+        return SimpleNamespace(wait=lambda: 0, close=lambda: None)
+    monkeypatch.setattr(cs, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(cs, "_windows_requirements_path", lambda: None)
+    monkeypatch.setattr(windows_job, "launch", launch)
+    assert run.invoke() == (1 if fail else 0)
+    assert checked == [True]
+    restored = signal.SIG_DFL if previous is None else previous
+    assert handlers == {signal.SIGINT: restored, signal.SIGBREAK: restored}

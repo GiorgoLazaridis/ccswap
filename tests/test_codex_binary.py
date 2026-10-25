@@ -68,13 +68,13 @@ def test_node_search(installation, where):
     expected = platform(package, where=where)
     if where != 'hoisted':
         platform(package, where='hoisted')
-    assert resolve() == [str(expected)]
+    assert resolve() == [str(expected.resolve())]
 
 
 def test_legacy(installation):
     _, package = installation
     expected = touch(package / 'vendor' / binary._TARGETS['x64'] / 'bin' / 'codex.exe')
-    assert resolve() == [str(expected)]
+    assert resolve() == [str(expected.resolve())]
     platform(package, executable=False)
     with pytest.raises(SessionError, match='Put the native codex.exe on PATH'):
         resolve()
@@ -85,9 +85,11 @@ def test_os_arm64(installation, arch, wow):
     shim, package = installation
     node_pe(shim.parent / 'node.exe', 0xAA64)
     expected = platform(package, 'arm64')
-    assert resolve(PROCESSOR_ARCHITECTURE=arch, PROCESSOR_ARCHITEW6432=wow) == [str(expected)]
+    assert resolve(PROCESSOR_ARCHITECTURE=arch, PROCESSOR_ARCHITEW6432=wow) == [
+        str(expected.resolve())]
     platform(package, 'x64')
-    assert resolve(PROCESSOR_ARCHITECTURE=arch, PROCESSOR_ARCHITEW6432=wow) == [str(expected)]
+    assert resolve(PROCESSOR_ARCHITECTURE=arch, PROCESSOR_ARCHITEW6432=wow) == [
+        str(expected.resolve())]
 
 
 def test_node_arch_overrides_os(installation):
@@ -97,9 +99,9 @@ def test_node_arch_overrides_os(installation):
     with pytest.raises(SessionError):
         resolve(PROCESSOR_ARCHITECTURE='ARM64')
     node_pe(shim.parent / 'node.exe', 0x8664)
-    assert resolve(PROCESSOR_ARCHITECTURE='ARM64') == [str(expected)]
+    assert resolve(PROCESSOR_ARCHITECTURE='ARM64') == [str(expected.resolve())]
     platform(package, 'arm64')
-    assert resolve(PROCESSOR_ARCHITECTURE='ARM64') == [str(expected)]
+    assert resolve(PROCESSOR_ARCHITECTURE='ARM64') == [str(expected.resolve())]
 
 
 @pytest.mark.parametrize('name,version', [('other', '0.164.0'), ('@openai/codex', '0.163.0')])
@@ -132,7 +134,7 @@ def test_direct(tmp_path, monkeypatch, windows):
     seen = []
     monkeypatch.setattr(binary, 'os', SimpleNamespace(name='nt' if windows else 'posix'))
     monkeypatch.setattr(binary.shutil, 'which', lambda name, path: seen.append((name, path)) or str(executable))
-    assert resolve() == [str(executable)]
+    assert resolve() == [str(executable.resolve())]
     assert seen == [('codex', 'synthetic')]
 
 
@@ -201,7 +203,7 @@ def test_probe_isolation(monkeypatch):
 def test_version_refused(monkeypatch, output):
     calls = fake_probe(monkeypatch, [output])
     with pytest.raises(SessionError, match='requires Codex 0.164.0'):
-        binary.probe_codex(['synthetic'])
+        binary.probe_codex(['codex.exe'])
     assert not calls[0][2].exists()
 
 
@@ -209,7 +211,7 @@ def test_version_refused(monkeypatch, output):
 def test_capability_refused(monkeypatch, help_output):
     fake_probe(monkeypatch, [b'codex-cli 0.164.0', help_output])
     with pytest.raises(SessionError, match='--no-daemon'):
-        binary.probe_codex(['synthetic'])
+        binary.probe_codex(['codex.exe'])
 
 
 @pytest.mark.parametrize('failure', ['timeout', 'exit', 'oversized', 'spawn'])
@@ -220,7 +222,7 @@ def test_probe_failure(monkeypatch, failure):
         calls = fake_probe(monkeypatch, [b'x' * (binary._LIMIT + 1) if failure == 'oversized' else b''],
                            timeout=failure == 'timeout', result=1 if failure == 'exit' else 0)
     with pytest.raises(SessionError) as error:
-        binary.probe_codex(['synthetic'])
+        binary.probe_codex(['codex.exe'])
     assert 'synthetic-secret' not in str(error.value)
     if failure != 'spawn':
         assert not calls[0][2].exists()
@@ -232,7 +234,7 @@ def test_shim_extensions(installation, monkeypatch, suffix):
     expected = platform(package)
     shim = touch(shim.with_suffix(suffix))
     monkeypatch.setattr(binary.shutil, 'which', lambda *a, **kw: str(shim))
-    assert resolve() == [str(expected)]
+    assert resolve() == [str(expected.resolve())]
 
 
 @pytest.mark.parametrize('name,version', [('wrong', '0.164.0'), ('@openai/codex', '0.165.0')])
@@ -302,7 +304,7 @@ def test_invalid_node_pe(installation, damage):
 def test_oversized_help(monkeypatch):
     fake_probe(monkeypatch, [b'codex-cli 0.164.0', b'--no-daemon\n' + b'x' * binary._LIMIT])
     with pytest.raises(SessionError):
-        binary.probe_codex(['synthetic'])
+        binary.probe_codex(['codex.exe'])
 
 
 @pytest.mark.parametrize('prefix', [[], [''], [None]])
@@ -334,7 +336,7 @@ def test_probe_ignores_stderr_warnings(monkeypatch):
             pass
 
     monkeypatch.setattr(binary.subprocess, "Popen", Fake)
-    binary.probe_codex(["codex"])
+    binary.probe_codex(["codex.exe"])
     assert seen == [binary.subprocess.DEVNULL] * 2
 
 
@@ -349,7 +351,7 @@ def test_node_from_path(installation, tmp_path, monkeypatch, arch, machine):
         return str(shim if name == 'codex' else node)
     monkeypatch.setattr(binary.shutil, 'which', which)
     expected = platform(package, arch)
-    assert resolve() == [str(expected)]
+    assert resolve() == [str(expected.resolve())]
     assert seen == [('codex', 'synthetic'), ('node.exe', 'synthetic')]
 
 
@@ -372,7 +374,7 @@ def test_windows_resolves_only_native_probe_prefix(installation, monkeypatch, su
     monkeypatch.setattr(binary.shutil, 'which', lambda *a, **kw: str(shim))
     expected = platform(package)
     prefix = resolve()
-    assert prefix == [str(expected)]
+    assert prefix == [str(expected.resolve())]
     assert Path(prefix[0]).name == 'codex.exe'
     with pytest.raises(SessionError, match='Put the native codex.exe on PATH'):
         binary.probe_codex([str(shim)])

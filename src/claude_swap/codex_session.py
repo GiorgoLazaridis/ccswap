@@ -344,7 +344,9 @@ def slot_custody(switcher: CodexAccountSwitcher, number: str, *,
         _checked_parents(home, switcher.backup_dir)
         _owned(home)
         manifest = load_record(home / ".ccswap-session.json", "manifest")
-        _require(manifest is not None and manifest["home"] == str(home)
+        # Bootstrap resolves path casing; native equality keeps Windows homes valid
+        # without resolving aliases past the ordinary-directory checks above.
+        _require(manifest is not None and Path(manifest["home"]) == home
                  and manifest["accountNumber"] == number
                  and manifest["sourceHome"] == str(switcher.codex_home.resolve(strict=True))
                  and manifest["bootstrapState"] == "ready")
@@ -358,7 +360,7 @@ def slot_custody(switcher: CodexAccountSwitcher, number: str, *,
             for path in runs.iterdir():
                 try:
                     record = load_record(path, "run")
-                    _require(record is not None and record["home"] == str(home))
+                    _require(record is not None and Path(record["home"]) == home)
                     records.append(record)
                 except (OSError, ValueError, SessionError):
                     invalid += 1
@@ -444,7 +446,7 @@ def reconcile_session(
         manifest = load_record(manifest_path, "manifest")
         _require(manifest is not None)
         source = switcher.codex_home.resolve(strict=True)
-        _require(manifest["accountNumber"] == number and manifest["home"] == str(home)
+        _require(manifest["accountNumber"] == number and Path(manifest["home"]) == home
                  and manifest["sourceHome"] == str(source)
                  and manifest["bootstrapState"] == "ready"
                  and not home.is_relative_to(source) and not source.is_relative_to(home))
@@ -525,7 +527,7 @@ def recover_session_credentials(switcher: CodexAccountSwitcher, number: str) -> 
     _require(intent is not None and manifest is not None and stored is not None)
     identity, _ = extract_identity(stored)
     accepted = intent["identity"]
-    _require(intent["home"] == str(home) and intent["accountNumber"] == number)
+    _require(Path(intent["home"]) == home and intent["accountNumber"] == number)
     _require(all(accepted[key] == manifest["identity"][key]
                  for key in ("userId", "workspaceId", "email")))
     _require(intent["reason"] == "replacement"
@@ -999,7 +1001,7 @@ def sync_sharing(backup_root: Path, home: Path, source_home: Path,
         _owned(home)
         expected = backup_root / "codex" / "sessions" / (
             manifest["accountNumber"] + "-" + slugify_email(manifest["identity"]["email"]))
-        _require(home == expected and manifest["home"] == str(home)
+        _require(home == expected and Path(manifest["home"]) == home
                  and manifest["sourceHome"] == str(source_home)
                  and manifest["bootstrapState"] == "ready")
         _require(not home.is_relative_to(source_home) and not source_home.is_relative_to(home))
@@ -1385,7 +1387,7 @@ _CHILD_VALUES = {
     "--add-dir", "--enable", "--disable", "--image", "-i", "--config", "-c",
 }
 _CHILD_FLAGS = {
-    "--strict-config", "--search", "--no-alt-screen", "--no-daemon", "--worktree",
+    "--strict-config", "--search", "--no-alt-screen", "--no-daemon",
     "--approve-for-me", "--not-so-yolo", "--dangerously-bypass-approvals-and-sandbox",
     "--yolo", "--dangerously-bypass-hook-trust", "--help", "-h", "--version", "-V",
 }
@@ -1455,6 +1457,13 @@ def _child_parse(
             ):
                 raise SessionError("Unsupported child subcommand: " + token)
             positional = True
+    if form in {"resume", "fork", "exec resume"}:
+        # A resumed session can reload config relative to its recorded cwd.
+        for key, value in overrides:
+            if key.split(".")[0] in {"sqlite_home", "log_dir"} and (
+                not isinstance(value, str) or not Path(value).is_absolute()
+            ):
+                raise SessionError("Relative child path override is unsupported for " + form)
     return form, overrides, cwd
 
 
@@ -1511,13 +1520,6 @@ def child_argv(codex_args: list[str], home: Path, *,
     for source, table, managed in config_layers:
         if not managed:
             _child_config_keys(source, table)
-    if form in {"resume", "fork", "exec resume"}:
-        # TUI reloads config against recorded cwd; loader/mod.rs:259–267 resolves CLI paths there.
-        for key, value in overrides:
-            if key.split(".")[0] in {"sqlite_home", "log_dir"} and (
-                not isinstance(value, str) or not Path(value).is_absolute()
-            ):
-                raise SessionError("Relative child path override is unsupported for " + form)
     root = [] if form.startswith("exec") else ["--no-daemon"]
     if form in {"resume", "fork"} and not _child_has_cd(codex_args):
         # Without --cd the TUI may reload config in the recorded session cwd
@@ -1656,12 +1658,13 @@ def _run_wait(process: Any) -> int:
         # The console delivers Ctrl-C/Ctrl-Break to Codex directly; a KeyboardInterrupt
         # here would skip the run's finish and capture.
         try:
-            for signum in (signal.SIGINT, getattr(signal, "SIGBREAK", signal.SIGINT)):
-                previous[signum] = signal.signal(signum, signal.SIG_IGN)
+            for signum in (signal.SIGINT, getattr(signal, "SIGBREAK", None)):
+                if signum is not None:
+                    previous[signum] = signal.signal(signum, signal.SIG_IGN)
             return process.wait()
         finally:
             for signum, handler in previous.items():
-                signal.signal(signum, handler)
+                signal.signal(signum, signal.SIG_DFL if handler is None else handler)
     def forward(signum: int, frame: Any) -> None:
         try:
             process.send_signal(signum)
@@ -1677,7 +1680,7 @@ def _run_wait(process: Any) -> int:
         return result if result >= 0 else 128 - result
     finally:
         for signum, handler in previous.items():
-            signal.signal(signum, handler)
+            signal.signal(signum, signal.SIG_DFL if handler is None else handler)
 
 
 def _run_reap() -> None:
@@ -1818,15 +1821,21 @@ def run_session(switcher: CodexAccountSwitcher, identifier: str | None, *,
             process = subprocess.Popen(binary + codex_args, env=env, cwd=cwd, shell=False)
             return _run_wait(process)
         # Keep Ctrl-C from interrupting the finish; the child got its own interrupt.
-        interrupt = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        interrupts = [signal.SIGINT]
+        if sys.platform == "win32" and getattr(signal, "SIGBREAK", None) is not None:
+            interrupts.append(signal.SIGBREAK)
+        previous = {}
         try:
+            for signum in interrupts:
+                previous[signum] = signal.signal(signum, signal.SIG_IGN)
             result = _run_wait(process)
             if sys.platform == "win32":
                 process.close()
             process, committed, ran = None, False, True
             return _run_finish(switcher, number, record, result)
         finally:
-            signal.signal(signal.SIGINT, interrupt)
+            for signum, handler in previous.items():
+                signal.signal(signum, signal.SIG_DFL if handler is None else handler)
     except (ClaudeSwitchError, OSError, ValueError, TypeError, KeyError, RuntimeError,
             KeyboardInterrupt) as exc:
         # Session and switch errors carry fixed, token-free reasons worth showing.

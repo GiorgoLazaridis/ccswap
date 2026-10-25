@@ -50,6 +50,28 @@ def snapshot(custody):
     )]
 
 
+def test_session_home_case_uses_native_path_semantics(custody, monkeypatch):
+    import os
+    from types import SimpleNamespace
+    from claude_swap import process_detection
+
+    switcher, home, _ = custody
+    manifest_path = home / ".ccswap-session.json"
+    manifest = cs.load_record(manifest_path, "manifest")
+    manifest["home"] = str(home.with_name(home.name.upper()))
+    assert manifest["home"] != str(home)
+    write(manifest_path, manifest)
+    monkeypatch.setattr(cs, "sys", SimpleNamespace(platform="linux"))
+    monkeypatch.setattr(process_detection, "scan_codex_home", lambda *_: {
+        "state": "quiescent", "pids": [], "issues": []})
+    expected = "quiescent" if os.name == "nt" else "conflict"
+    assert cs.slot_custody(switcher, "1").state == expected
+    result = reconcile(custody)
+    assert result.state == ("unchanged" if os.name == "nt" else "conflict")
+    if os.name != "nt":
+        assert result.reason == "invalid_home"
+
+
 @pytest.mark.parametrize("h,s,state", [
     (0, 0, "unchanged"), (1, 1, "unchanged"),
     (1, 0, "adopted_session"), (0, 1, "reseeded_session"), (1, 2, "conflict"),

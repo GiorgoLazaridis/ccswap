@@ -145,7 +145,8 @@ def test_macos_bad_start_even_missing_pid(mac, start):
 
 
 @pytest.mark.parametrize("env", [b"CODEX_HOME=/path with spaces/'quotes'\\escapes\nline\0",
-                                  b"LONG=" + b"x" * 200000 + b"\0CODEX_HOME=/tmp/home\0"])
+                                  b"LONG=" + b"x" * 200000 + b"\0CODEX_HOME=/tmp/home\0"],
+                         ids=["special-characters", "large-environment"])
 def test_macos_procargs_preserves_values(env):
     assert detection._codex_macos_environment(procargs(env, (b"worker", b"arg with spaces"))) == (env, b"")
 
@@ -180,11 +181,15 @@ def test_macos_scan_paths_and_argv_are_distinct(mac, tmp_path):
 
 @pytest.mark.parametrize("env, expected", [
     (b"CODEX_HOME=relative\0", "uncertain"),
-    (b"CODEX_HOME=/missing-ccswap-alias\0", "uncertain"),
+    (b"missing-absolute-home", "uncertain"),
     (b"CODEX_HOME=\0", "quiescent"),
     (b"MALFORMED\0", "quiescent"),
 ])
 def test_macos_ambiguous_environment(mac, tmp_path, env, expected):
+    if env == b"missing-absolute-home":
+        missing = tmp_path / "missing-ccswap-alias"
+        assert missing.is_absolute() and not missing.exists()
+        env = b"CODEX_HOME=" + os.fsencode(missing) + b"\0"
     mac.add(env=env)
     assert detection.scan_codex_home(tmp_path, [])["state"] == expected
 

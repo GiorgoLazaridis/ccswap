@@ -221,6 +221,10 @@ def test_unknown_default_never_authorizes_refresh(usage, monkeypatch, failure, s
 
 
 def test_session_start_before_401_blocks_real_refresh(custody, monkeypatch):
+    from types import SimpleNamespace
+
+    # Exercise the POSIX scanner race; Windows job custody has separate tests.
+    monkeypatch.setattr(cs, "sys", SimpleNamespace(platform="linux"))
     from claude_swap import process_detection
 
     switcher, _, _ = custody
