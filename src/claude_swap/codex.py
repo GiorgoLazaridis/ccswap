@@ -32,7 +32,7 @@ from claude_swap.codex_usage import (
     fetch_codex_usage,
     refresh_codex_auth,
 )
-from claude_swap.exceptions import AccountNotFoundError, ConfigError, SwitchError, ValidationError
+from claude_swap.exceptions import AccountNotFoundError, ConfigError, LockError, SwitchError, ValidationError
 from claude_swap.json_output import USAGE_API_KEY
 from claude_swap.locking import FileLock
 from claude_swap.models import AccountSnapshot, AccountsSnapshot
@@ -257,8 +257,11 @@ class CodexAccountSwitcher:
 
     def _account_plan(self, number: str, account: dict[str, Any], active: str | None) -> str:
         """Read the effective token's plan without refreshing or capturing."""
-        with FileLock(self.lock_file):
-            effective = self._effective_account_auth(number, allow_refresh=False)
+        try:
+            with FileLock(self.lock_file, timeout=2):
+                effective = self._effective_account_auth(number, allow_refresh=False)
+        except LockError:
+            return account.get("planType", "")
         auth = effective["auth"]
         return (_plan_type_from_auth(auth) if auth else "") or account.get("planType", "")
 
@@ -273,44 +276,37 @@ class CodexAccountSwitcher:
 
         custody = cs.slot_custody(self, number)
         result = {"auth": None, "source": "unavailable", "custody": custody.state,
-                  "refresh": False, "reason": custody.reason,
+                  "refresh": False, "reason": {
+                      "uncertain": "Codex session liveness is uncertain",
+                      "conflict": "Codex session credentials are unavailable",
+                  }.get(custody.state, "stored Codex auth.json is missing"),
                   "base_url": DEFAULT_CHATGPT_BASE_URL}
         try:
-            if custody.state == "none":
-                active = self.current_account_number() == number
-                result.update(auth=self._read_json(self.auth_file) if active else
+            default_auth = None
+            if custody.state in ("none", "quiescent"):
+                result["reason"] = "Current Codex auth.json is unreadable"
+                default_auth = self._read_switch_auth()
+            active = (default_auth is not None and
+                      self._current_account_for_auth(default_auth, self._read_sequence()) == number)
+            if default_auth is not None and not active:
+                try:
+                    active = cs.same_identity(cs.extract_identity(default_auth)[0],
+                                              cs.extract_identity(self._read_account_auth(number))[0])
+                except SessionError:
+                    pass
+            if custody.state == "none" or (custody.state == "quiescent" and active):
+                result["reason"] = "Codex configuration is unreadable or invalid"
+                base_url = self._chatgpt_base_url()
+                result.update(auth=default_auth if active else
                               self._read_account_auth(number),
                               source="default" if active else "backup",
                               refresh=allow_refresh and not active,
-                              base_url=self._chatgpt_base_url())
+                              base_url=base_url, reason="stored Codex auth.json is missing")
             elif custody.state in ("live", "quiescent"):
                 home = cs.slot_home(self, number)
                 if custody.state == "quiescent" and allow_refresh:
                     self._guard_session_slot(number)
-                elif custody.state == "quiescent":
-                    classified = cs.classify_session(self, number)
-                    if classified.state == "conflict":
-                        raise SwitchError(classified.reason)
-                auth = None
-                for attempt in range(3):
-                    try:
-                        auth = cs.load_document(home / "auth.json")
-                        if auth is None:
-                            raise SessionError("missing auth")
-                        break
-                    except (ValueError, SessionError):
-                        if attempt == 2:
-                            raise SwitchError("busy_or_unreadable") from None
-                manifest = cs.load_record(home / ".ccswap-session.json", "manifest")
-                if not cs.same_identity(cs.extract_identity(auth)[0], manifest["identity"]):
-                    raise SwitchError("identity_conflict")
-                stored = self._read_session_backup(number)
-                if not cs.same_identity(cs.extract_identity(stored)[0], manifest["identity"]):
-                    raise SwitchError("identity_conflict")
-                h, saved = cs.auth_fingerprint(auth), cs.auth_fingerprint(stored)
-                baseline = manifest["baselineFingerprint"]
-                if h != saved and h != baseline and saved != baseline:
-                    raise SwitchError("generation_conflict")
+                auth, stored, manifest, h, saved, baseline = self._session_auth_snapshot(number)
                 if custody.state == "quiescent" and (allow_refresh or h == baseline):
                     auth = stored
                 # Session tokens only go to the known backend. Copied routing is
@@ -322,9 +318,11 @@ class CodexAccountSwitcher:
                         raise SwitchError("unvalidated_session_routing")
                 result.update(auth=auth, source="session" if custody.state == "live" or
                               (not allow_refresh and h != baseline) else "backup", refresh=allow_refresh and custody.state == "quiescent")
+        except ConfigError:
+            result.update(auth=None, source="unavailable", refresh=False)
         except (OSError, ValueError, TypeError, KeyError, SessionError, SwitchError):
             result.update(auth=None, source="unavailable", refresh=False,
-                          reason="session_busy_unreadable_or_conflict")
+                          reason="Codex session credentials are busy, unreadable or conflicted")
         authority = (result["source"], result["custody"], result["base_url"],
                      cs.auth_fingerprint(result["auth"]) if result["auth"] else None)
         authorities = getattr(self, "_usage_authorities", {})
@@ -333,6 +331,34 @@ class CodexAccountSwitcher:
         authorities[number] = authority
         self._usage_authorities = authorities
         return result
+
+    def _session_auth_snapshot(self, number: str) -> tuple:
+        """Strict bounded H read and identity/generation checks; store lock required."""
+        from claude_swap import codex_session as cs
+        from claude_swap.exceptions import SessionError
+
+        home = cs.slot_home(self, number)
+        auth = None
+        for attempt in range(3):
+            try:
+                auth = cs.load_document(home / "auth.json")
+                if auth is None:
+                    raise SessionError("missing auth")
+                break
+            except (OSError, ValueError, SessionError):
+                if attempt == 2:
+                    raise SessionError("Session credentials are busy or unreadable") from None
+        manifest = cs.load_record(home / ".ccswap-session.json", "manifest")
+        if not cs.same_identity(cs.extract_identity(auth)[0], manifest["identity"]):
+            raise SwitchError("identity_conflict")
+        stored = self._read_session_backup(number)
+        if not cs.same_identity(cs.extract_identity(stored)[0], manifest["identity"]):
+            raise SwitchError("identity_conflict")
+        h, saved = cs.auth_fingerprint(auth), cs.auth_fingerprint(stored)
+        baseline = manifest["baselineFingerprint"]
+        if h != saved and h != baseline and saved != baseline:
+            raise SwitchError("generation_conflict")
+        return auth, stored, manifest, h, saved, baseline
 
     def _credential_path(self, number: str) -> Path:
         return self.credentials_dir / f"account-{number}.json"
@@ -805,42 +831,55 @@ class CodexAccountSwitcher:
 
     def _session_status(self, number: str) -> dict[str, Any]:
         """Observe session state without capture, refresh or credential writes."""
-        from claude_swap import codex_session as cs, process_detection
+        try:
+            with FileLock(self.lock_file, timeout=2):
+                return self._locked_session_status(number)
+        except LockError:
+            return {"state": "uncertain", "capturePending": True, "runCount": 0, "shared": False}
+
+    def _locked_session_status(self, number: str) -> dict[str, Any]:
+        """Classify display state under the caller-held store lock."""
+        from claude_swap import codex_session as cs, process_detection, windows_job
         from claude_swap.exceptions import SessionError
 
-        with FileLock(self.lock_file):
-            custody = cs.slot_custody(self, number)
-            state = {"none": "absent", "quiescent": "idle"}.get(custody.state, custody.state)
-            pending = state in ("live", "uncertain") or custody.intent
-            count, shared = 0, False
-            if state != "absent":
-                try:
-                    classified = cs.classify_session(self, number)
-                    if classified.state == "conflict":
-                        state = "stale" if classified.reason == "stale_intent" and custody.intent else "conflict"
-                    elif classified.state != "unchanged":
-                        pending = True
-                    if custody.intent and state == "idle":
+        custody = cs.slot_custody(self, number)
+        state = {"none": "absent", "quiescent": "idle", "conflict": "uncertain"}.get(
+            custody.state, custody.state)
+        pending = state in ("live", "uncertain") or custody.intent
+        count, shared = 0, False
+        if state != "absent":
+            try:
+                if custody.intent:
+                    home = cs.slot_home(self, number)
+                    intent = cs.load_record(home.parent / f".{home.name}.stale.json", "stale")
+                    if intent is None:
+                        raise SessionError("Unreadable session intent")
+                    if state == "idle":
                         state = "stale"
-                    runs = cs.slot_home(self, number) / "runs"
-                    if runs.exists():
-                        for path in runs.iterdir():
-                            run = cs.load_record(path, "run")
-                            if run["phase"] == "finished":
-                                continue
-                            supervisor = run["supervisor"]
-                            alive = process_detection.codex_process_state(
-                                supervisor["pid"], supervisor["start"])
-                            if alive == "alive":
-                                count += 1
-                                shared |= run["shared"]
-                            elif alive == "unknown" and state != "conflict":
-                                state, pending = "uncertain", True
-                except (OSError, ValueError, TypeError, KeyError, SessionError):
-                    if state != "conflict":
-                        state, pending = "uncertain", True
-            return {"state": state, "capturePending": pending,
-                    "runCount": count, "shared": shared}
+                else:
+                    _, _, _, h, saved, baseline = self._session_auth_snapshot(number)
+                    pending |= h != saved or h != baseline
+                runs = cs.slot_home(self, number) / "runs"
+                if runs.exists():
+                    process_state = (windows_job.process_state if sys.platform == "win32"
+                                     else process_detection.codex_process_state)
+                    for path in runs.iterdir():
+                        run = cs.load_record(path, "run")
+                        if run["phase"] == "finished":
+                            continue
+                        supervisor = run["supervisor"]
+                        alive = process_state(supervisor["pid"], supervisor["start"])
+                        if alive == "alive":
+                            count += 1
+                            shared |= run["shared"]
+                        elif alive == "unknown" and state != "conflict":
+                            state, pending = "uncertain", True
+            except SwitchError:
+                state = "conflict"
+            except (OSError, ValueError, TypeError, KeyError, SessionError):
+                if state != "conflict":
+                    state, pending = "uncertain", True
+        return {"state": state, "capturePending": pending, "runCount": count, "shared": shared}
 
     def status(self, json_output: bool = False) -> dict[str, Any]:
         data = self._read_sequence()
