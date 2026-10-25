@@ -182,6 +182,20 @@ class TestUiSettings:
         raw = json.loads(settings_path(tmp_path).read_text())
         assert raw["ui"]["mask"] is True
 
+    def test_star_prompt_defaults_to_on(self, tmp_path: Path):
+        assert load_ui_settings(tmp_path).star_prompt is True
+
+    def test_star_prompt_round_trips(self, tmp_path: Path):
+        assert set_setting(tmp_path, "ui.starPrompt", "off") is False
+        assert load_ui_settings(tmp_path).star_prompt is False
+        raw = json.loads(settings_path(tmp_path).read_text())
+        assert raw == {"schemaVersion": 1, "ui": {"starPrompt": False}}
+
+    @pytest.mark.parametrize("value", ["false", 0, None])
+    def test_non_boolean_star_prompt_falls_back_to_default(self, tmp_path: Path, value):
+        settings_path(tmp_path).write_text(json.dumps({"ui": {"starPrompt": value}}))
+        assert load_ui_settings(tmp_path).star_prompt is True
+
     def test_invalid_mask_does_not_reset_view(self, tmp_path: Path):
         settings_path(tmp_path).write_text(
             json.dumps({"ui": {"mask": "yes", "view": "codex", "theme": "light"}})

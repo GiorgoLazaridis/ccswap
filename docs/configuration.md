@@ -10,6 +10,7 @@ ccswap config get autoswitch.threshold
 ccswap config set autoswitch.threshold 80  # validated: rejects out-of-range values loudly
 ccswap config set ui.view codex             # combined (default), claude, or codex
 ccswap config set ui.mask on                # hide emails and org names in the TUI, mod and statusline
+ccswap config set ui.starPrompt off          # stop asking for a GitHub star after a switch
 ccswap config set credentials.backend file  # macOS headless/SSH: never use the Keychain
 ccswap config set updates.check off         # stop the daily PyPI check for a newer release
 ccswap config set autoswitch.model Fable   # per-model switching (see "auto"); Fable,Opus for several

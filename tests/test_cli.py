@@ -633,6 +633,29 @@ class TestCLI:
         assert "called" not in seen
 
 
+class TestStarPromptSetting:
+    @pytest.mark.parametrize("enabled", [None, True, False])
+    def test_switch_honours_setting(self, tmp_path: Path, enabled):
+        from claude_swap.settings import set_setting
+
+        if enabled is not None:
+            set_setting(tmp_path, "ui.starPrompt", "on" if enabled else "off")
+        with patch("claude_swap.cli.ClaudeAccountSwitcher") as factory, \
+             patch("claude_swap.paths.get_backup_root", return_value=tmp_path), \
+             patch.object(sys, "argv", ["claude-swap", "--switch"]), \
+             patch("os.geteuid", return_value=1000, create=True), \
+             patch("claude_swap.update_check.check_for_update", return_value=None), \
+             patch("claude_swap.star_prompt.maybe_ask") as ask:
+            switcher = factory.return_value
+            switcher._get_sequence_data.return_value = {"activeAccountNumber": 1}
+            cli.main()
+        switcher.switch.assert_called_once()
+        if enabled is False:
+            ask.assert_not_called()
+        else:
+            ask.assert_called_once_with(switcher, "1")
+
+
 class TestUpdateCheckSetting:
     """The passive update hint honours `updates.check` in settings.json."""
 

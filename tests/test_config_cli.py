@@ -63,13 +63,14 @@ class TestConfigList:
             "ui.theme",
             "ui.view",
             "ui.mask",
+            "ui.starPrompt",
             "credentials.backend",
             "claude.statusline",
             "claude.mod",
             "updates.check",
         ):
             assert key in out
-        assert out.count("(default)") == 19
+        assert out.count("(default)") == 20
 
     def test_set_key_not_marked_default(self, temp_home, capsys):
         _run(["set", "autoswitch.cooldownSeconds", "600"], capsys)
@@ -96,7 +97,9 @@ class TestConfigList:
         assert payload["schemaVersion"] == 1
         assert payload["path"].endswith("settings.json")
         by_key = {entry["key"]: entry for entry in payload["settings"]}
-        assert len(by_key) == 19
+        assert len(by_key) == 20
+        assert by_key["ui.starPrompt"]["value"] is True
+        assert by_key["ui.starPrompt"]["isSet"] is False
         assert by_key["ui.mask"]["value"] is False
         assert by_key["ui.mask"]["isSet"] is False
         assert by_key["claude.statusline"]["value"] is False
@@ -122,6 +125,16 @@ class TestConfigSetGet:
         assert set(raw) == {"schemaVersion", "autoswitch"}
         assert set(raw["autoswitch"]) == {"threshold"}
         assert raw["autoswitch"]["threshold"] == 80.0
+
+    def test_set_star_prompt_off(self, temp_home, capsys):
+        code, out, _ = _run(["set", "ui.starPrompt", "off"], capsys)
+        assert code == 0
+        assert "ui.starPrompt = false" in out
+        raw = json.loads(_settings_file(capsys).read_text())
+        assert raw == {"schemaVersion": 1, "ui": {"starPrompt": False}}
+        code, out, _ = _run(["get", "ui.starPrompt"], capsys)
+        assert code == 0
+        assert out.strip() == "false"
 
     def test_set_bool_words(self, temp_home, capsys):
         code, out, _ = _run(
