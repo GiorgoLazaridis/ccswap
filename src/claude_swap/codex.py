@@ -21,6 +21,7 @@ import sys
 import tempfile
 import time
 import tomllib
+import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,7 +30,9 @@ from typing import Any
 from claude_swap.codex_usage import (
     DEFAULT_CHATGPT_BASE_URL,
     CodexUsageError,
+    consume_reset_credit,
     fetch_codex_usage,
+    list_reset_credits,
     refresh_codex_auth,
 )
 from claude_swap.exceptions import AccountNotFoundError, ConfigError, SwitchError, ValidationError
@@ -38,6 +41,7 @@ from claude_swap.locking import FileLock
 from claude_swap.models import AccountSnapshot, AccountsSnapshot
 from claude_swap.oauth import format_reset
 from claude_swap.paths import get_backup_root
+from claude_swap.printer import dimmed, warning
 from claude_swap.process_detection import is_codex_running
 from claude_swap.usage_store import SERVE_TTL_S, UsageEntry
 
@@ -656,6 +660,179 @@ class CodexAccountSwitcher:
             else:
                 print(f"  usage unavailable: {account['error'] or 'no data returned'}")
         return payload
+
+    def redeem_reset(
+        self, identifier: str, assume_yes: bool = False, json_output: bool = False
+    ) -> dict[str, Any]:
+        """Redeem only after explicit consent, then confirm with fresh usage."""
+        if json_output and not assume_yes:
+            raise SwitchError("--json requires --yes")
+        if not assume_yes and not sys.stdin.isatty():
+            raise SwitchError("Non-interactive reset redemption requires --yes")
+        data = self._read_sequence()
+        number = self._resolve(identifier, data)
+        record = data["accounts"][number]
+        try:
+            before = self._fetch_redeem_usage(number)
+            if before.get("reset_credits", {}).get("available", 0) <= 0:
+                raise SwitchError("No banked resets available for this account")
+            if not json_output:
+                print(f"Codex Account {number}: {record.get('email', '')}")
+                self._print_redeem_usage(before)
+            if not assume_yes:
+                self._confirm_redeem()
+            response, credit_id = self._consume_reset(
+                number, record, str(uuid.uuid4()), json_output=json_output
+            )
+        except CodexUsageError as exc:
+            raise SwitchError(str(exc)) from exc
+        result = {
+            "account": {"number": int(number), "email": record.get("email", "")},
+            "code": response["code"],
+            "windowsReset": response.get("windows_reset", 0),
+            "creditId": credit_id,
+            "usageAfter": None,
+            "confirmed": False,
+        }
+        if result["code"] == "reset":
+            try:
+                result["usageAfter"] = self._fetch_redeem_usage(number)
+                remaining = result["usageAfter"].get("reset_credits", {}).get("available")
+                result["confirmed"] = (
+                    isinstance(remaining, int)
+                    and not isinstance(remaining, bool)
+                    and remaining < before["reset_credits"]["available"]
+                )
+            except (CodexUsageError, ConfigError, SwitchError):
+                pass
+        self._report_redeem(result, json_output)
+        return result
+
+    def _redeem_auth(self, number: str) -> tuple[dict[str, Any], bool]:
+        """Read the selected login, refusing missing ChatGPT or API-key auth."""
+        active = self.current_account_number() == number
+        auth = self._read_json(self.auth_file) if active else self._read_account_auth(number)
+        if (
+            not auth
+            or auth.get("auth_mode") == "api_key"
+            or not isinstance(auth.get("tokens"), dict)
+        ):
+            raise SwitchError(
+                "Reset redemption requires a stored/live ChatGPT login, not an API key"
+            )
+        return auth, active
+
+    def _fetch_redeem_usage(self, number: str) -> dict[str, Any]:
+        """Fetch fresh usage with one inactive-account 401 recovery."""
+        auth, active = self._redeem_auth(number)
+        try:
+            return fetch_codex_usage(auth, base_url=self._chatgpt_base_url())
+        except CodexUsageError as exc:
+            if exc.status_code != 401 or active:
+                raise
+            refreshed = self._refresh_inactive_auth(number, auth)
+            if refreshed is None:
+                raise
+            return fetch_codex_usage(refreshed, base_url=self._chatgpt_base_url())
+
+    @staticmethod
+    def _print_redeem_usage(usage: dict[str, Any]) -> None:
+        """Print available quota windows and banked resets with countdowns."""
+        for key, label in (("five_hour", "5h"), ("weekly", "Weekly")):
+            window = usage.get(key)
+            if isinstance(window, dict):
+                line = f"  {label}: {window.get('pct', 0):.0f}% used"
+                resets_at = window.get("resets_at")
+                if isinstance(resets_at, str) and resets_at:
+                    countdown, clock = format_reset(resets_at)
+                    line += f" · resets in {countdown} ({clock})"
+                print(line)
+        credits = usage.get("reset_credits")
+        if isinstance(credits, dict) and isinstance(credits.get("available"), int):
+            line = f"  Banked resets: {credits['available']}"
+            expires_at = credits.get("expires_at")
+            if isinstance(expires_at, str) and expires_at:
+                countdown, clock = format_reset(expires_at)
+                line += f" · earliest expires in {countdown} ({clock})"
+            print(line)
+
+    @staticmethod
+    def _confirm_redeem() -> None:
+        """Require affirmative consent, treating EOF and interruption as No."""
+        try:
+            consent = input("Redeem one banked reset now? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            consent = ""
+        if consent not in ("y", "yes"):
+            raise SwitchError("Reset redemption cancelled")
+
+    def _consume_reset(
+        self, number: str, record: dict[str, Any], request_id: str,
+        *, json_output: bool = False,
+    ) -> tuple[dict[str, Any], str | None]:
+        """Consume under lock, retrying only an inactive 401 with the same key."""
+        auth, _ = self._redeem_auth(number)
+        cards = list_reset_credits(auth, base_url=self._chatgpt_base_url())
+        credit_id = cards[0]["id"] if cards else None
+        if credit_id is None and not json_output:
+            print(dimmed("Reset card details unavailable; Codex will pick the card."))
+        for attempt in range(2):
+            try:
+                with FileLock(self.lock_file):
+                    if self._read_sequence()["accounts"].get(number) != record:
+                        raise SwitchError("Saved account changed; reset redemption cancelled")
+                    auth, active = self._redeem_auth(number)
+                    response = consume_reset_credit(
+                        auth, base_url=self._chatgpt_base_url(),
+                        redeem_request_id=request_id, credit_id=credit_id,
+                    )
+                return response, credit_id
+            except CodexUsageError as exc:
+                if exc.status_code != 401:
+                    raise
+                rejected = CodexUsageError(
+                    "Codex rejected the login (HTTP 401); nothing was redeemed. "
+                    "Log in with that account and run 'ccswap codex add'.",
+                    status_code=401,
+                )
+                if attempt or active:
+                    raise rejected from exc
+                try:
+                    refreshed = self._refresh_inactive_auth(number, auth)
+                except (CodexUsageError, ConfigError) as refresh_exc:
+                    # The 401 means the POST was refused, so nothing was redeemed.
+                    raise rejected from refresh_exc
+                if refreshed is None:
+                    raise rejected from exc
+        raise AssertionError("Reset retry exhausted")
+
+    def _report_redeem(self, result: dict[str, Any], json_output: bool) -> None:
+        """Report one outcome, leaving error messages to the CLI."""
+        code = result["code"]
+        if json_output:
+            print(json.dumps(result))
+        if code not in ("reset", "nothing_to_reset"):
+            message = {
+                "no_credit": "No reset card is available.",
+                "already_redeemed": "The reset card was already redeemed.",
+            }.get(code, f"Unknown reset response code: {code}")
+            raise SwitchError(message)
+        if json_output:
+            return
+        if code == "nothing_to_reset":
+            print("Nothing to reset; the card was kept.")
+        elif result["confirmed"]:
+            print("Reset confirmed.")
+            self._print_redeem_usage(result["usageAfter"])
+        elif result["usageAfter"] is not None:
+            warning(
+                "Reset accepted, but usage does not show it yet; "
+                "run 'ccswap codex usage' to check"
+            )
+        else:
+            warning(
+                "Reset accepted but could not be confirmed; run 'ccswap codex usage' to check"
+            )
 
     def accounts_snapshot(self, fetch: set[str] | None = None) -> AccountsSnapshot:
         data = self._read_sequence()
