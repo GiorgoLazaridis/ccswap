@@ -1,4 +1,4 @@
-"""Internal Codex session custody primitives (no launch integration)."""
+"""Codex session custody and internal terminal supervision."""
 
 from __future__ import annotations
 
@@ -317,7 +317,8 @@ def slot_home(switcher: CodexAccountSwitcher, number: str) -> Path:
     )
 
 
-def slot_custody(switcher: CodexAccountSwitcher, number: str) -> Custody:
+def slot_custody(switcher: CodexAccountSwitcher, number: str, *,
+                 completed: dict[str, Any] | None = None) -> Custody:
     """Observe custody under caller-held R/.lock; never refresh or launch.
 
     A7 path checks exclude hostile same-uid swaps. A8 attribution and residual
@@ -382,7 +383,8 @@ def slot_custody(switcher: CodexAccountSwitcher, number: str) -> Custody:
             issues += 1
         # Finished drops reservations; A6 still needs both identities gone after job disappearance.
         for identity in (record["supervisor"], record["child"]):
-            if identity is None:
+            if identity is None or (identity == completed and record["phase"] == "finished"
+                                    and identity == record["supervisor"]):
                 continue
             state = windows_job.process_state(identity["pid"], identity["start"])
             if job == "gone" and state != "gone":
@@ -1334,7 +1336,8 @@ def _child_private(value: str, home: Path, base: Path) -> bool:
         raise SessionError("Cannot resolve isolated child path.") from exc
 
 
-def child_env(env: dict[str, str], home: Path) -> tuple[dict[str, str], list[str]]:
+def child_env(env: dict[str, str], home: Path, *,
+              cwd: Path | None = None) -> tuple[dict[str, str], list[str]]:
     """Build a private child environment; diagnostics contain variable names only."""
     result = env.copy()
     warnings = []
@@ -1344,13 +1347,13 @@ def child_env(env: dict[str, str], home: Path) -> tuple[dict[str, str], list[str
             warnings.append(f"Removed {name}.")
     if "CODEX_SQLITE_HOME" in result:
         value = result["CODEX_SQLITE_HOME"].strip()
-        if not value or not _child_private(value, home, Path.cwd()):
+        if not value or not _child_private(value, home, cwd or Path.cwd()):
             del result["CODEX_SQLITE_HOME"]
             warnings.append("Removed CODEX_SQLITE_HOME.")
         elif not Path(value).is_absolute() or value != result["CODEX_SQLITE_HOME"]:
             # core/src/config/mod.rs:272–282 resolves this against --cd, not the parent cwd.
             # Pin a private relative value before the child's working directory can change.
-            result["CODEX_SQLITE_HOME"] = str(Path(value).resolve())
+            result["CODEX_SQLITE_HOME"] = str(((cwd or Path.cwd()) / value).resolve())
     result["CODEX_HOME"] = str(home)
     return result, warnings
 
@@ -1392,9 +1395,12 @@ migrate-nfs-db unarchive cloud cloud-tasks responses-api-proxy stdio-to-uds feat
 help""".split())
 
 
-def _child_parse(args: list[str]) -> tuple[str, list[tuple[str, Any]], Path]:
+def _child_parse(
+    args: list[str], *, cwd: Path | None = None,
+) -> tuple[str, list[tuple[str, Any]], Path]:
     form, positional, overrides = "interactive", False, []
-    cwd = Path.cwd()
+    base = cwd if cwd is not None else Path.cwd()
+    cwd = base
     index = 0
     while index < len(args):
         token = args[index]
@@ -1426,7 +1432,7 @@ def _child_parse(args: list[str]) -> tuple[str, list[tuple[str, Any]], Path]:
                 if option in {"-C", "--cd"}:
                     if value.startswith("~"):
                         raise SessionError("Home expansion is not supported in child paths.")
-                    cwd = Path.cwd() / value
+                    cwd = base / value
                 if option in {"-c", "--config"}:
                     overrides.append(_child_override(value))
                 if option in {"-i", "--image"} and form != "exec resume" and not equal:
@@ -1491,9 +1497,10 @@ def _child_paths(home: Path, layers: list[tuple[Path, dict[str, Any], bool]],
 
 
 def child_argv(codex_args: list[str], home: Path, *,
-               config_layers: list[tuple[Path, dict[str, Any], bool]]) -> list[str]:
+               config_layers: list[tuple[Path, dict[str, Any], bool]],
+               cwd: Path | None = None) -> list[str]:
     """Validate supported invocation forms and add root isolation controls."""
-    form, overrides, cwd = _child_parse(codex_args)
+    form, overrides, cwd = _child_parse(codex_args, cwd=cwd)
     for source, table, managed in config_layers:
         if not managed:
             _child_config_keys(source, table)
@@ -1516,3 +1523,294 @@ def child_argv(codex_args: list[str], home: Path, *,
         boundary = codex_args.index("--") if "--" in codex_args else len(codex_args)
         return root + codex_args[:boundary] + paths + codex_args[boundary:]
     return root + codex_args
+
+
+def _run_layers(home: Path, cwd: Path) -> list[tuple[Path, dict[str, Any], bool]]:
+    sources = [(p, p.name != "config.toml") for p in _system_policy_paths()]
+    sources += [(home / "config.toml", False), (cwd / "config.toml", False)]
+    sources += [(p, False) for p in _project_policy_paths(cwd)]
+    if sys.platform == "win32":
+        requirements = _windows_requirements_path()
+        if requirements is not None:
+            sources.append((requirements, True))
+    layers = []
+    for path, managed in sources:
+        try:
+            with path.open("rb") as stream:
+                table = tomllib.load(stream)
+        except FileNotFoundError:
+            # A dangling config link is not an absent configuration.
+            if path.is_symlink():
+                _policy_error(path, "unreadable configuration")
+            continue
+        except (OSError, ValueError):
+            _policy_error(path, "unreadable configuration")
+        layers.append((path, table, managed))
+    return layers
+
+
+def _run_notice(message: str) -> None:
+    print(message, file=sys.stderr)
+
+
+def _run_refuse(message: str) -> None:
+    _run_notice(message)
+    raise SessionError("Codex run refused.")
+
+
+def _run_custody(switcher: CodexAccountSwitcher, number: str, shared: bool) -> Custody:
+    custody = slot_custody(switcher, number)
+    if custody.state == "uncertain" or custody.issue_count or custody.invalid_records:
+        _run_refuse(f"Account {number}: session liveness is uncertain; credential writes refused. "
+                           f"{custody.reason}. Stop identified processes or repair scan "
+                           "permissions, then retry.")
+    if custody.state == "conflict":
+        _run_refuse(f"Account {number}: session/backup identity or generation conflict; "
+                           f"files retained at {slot_home(switcher, number)}. "
+                           "Reconcile the login explicitly before retrying.")
+    if custody.state == "live" and not shared:
+        _run_refuse(f"Account {number} already has a live session. Use --shared to join with "
+                           "the same refresh race as several Codex processes in ~/.codex.")
+    return custody
+
+
+def _run_prepare(switcher: CodexAccountSwitcher, number: str, shared: bool,
+                 args: list[str], env: dict[str, str],
+                 cwd: Path) -> tuple[Path, list[str], dict[str, str]]:
+    custody = _run_custody(switcher, number, shared)
+    if custody.state != "live":
+        switcher._guard_session_slot(number)
+    home = slot_home(switcher, number)
+    if custody.state == "none":
+        home = bootstrap_home(switcher.backup_dir, switcher.codex_home, number,
+                              switcher._read_session_backup(number))
+    manifest_path = home / ".ccswap-session.json"
+    manifest = load_record(manifest_path, "manifest")
+    auth = load_document(home / "auth.json")
+    identity, plan = extract_identity(auth)
+    _require(same_identity(identity, manifest["identity"])
+             and identity["email"] == manifest["identity"]["email"])
+    if custody.state == "live":
+        _require(not custody.intent)
+        stored = switcher._read_session_backup(number)
+        _require(same_identity(extract_identity(stored)[0], identity)
+                 and auth_fingerprint(stored) in {manifest["baselineFingerprint"],
+                                                  auth_fingerprint(auth)})
+        _run_notice("Shared session: refresh tokens may race. "
+                    "Capture pending until all writers exit.")
+    _, notices = sync_sharing(switcher.backup_dir, home, switcher.codex_home, manifest,
+                             lambda value: _session_write(
+                                 switcher.backup_dir, manifest_path, value))
+    for notice in notices:
+        _run_notice(notice)
+    _, _, effective = _child_parse(args, cwd=cwd)
+    check_login_policy(home, effective, identity, plan)
+    layers = _run_layers(home, effective)
+    for source, table, _ in layers:
+        _check_policy_table(table, source, identity["workspaceId"])
+    child, notices = child_env(env, home, cwd=cwd)
+    if notices:
+        names = [notice.removeprefix("Removed ").removesuffix(".") for notice in notices]
+        _run_notice("Ignoring " + ", ".join(names) + " for this isolated run.")
+    return home, child_argv(args, home, config_layers=layers, cwd=cwd), child
+
+
+def _run_subreaper() -> None:
+    """Adopt descendants so zombies cannot obstruct the final home scan.
+
+    Linux status is process-wide and retained by this CLI main process.
+    """
+    if sys.platform == "linux":
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
+            _run_refuse("Cannot establish Codex descendant supervision.")
+
+
+def _run_identity(pid: int) -> dict[str, Any]:
+    from claude_swap import process_detection, windows_job
+
+    start = (windows_job.process_identity(pid)[1] if sys.platform == "win32"
+             else process_detection.codex_process_identity(pid))
+    if start is None:
+        _run_refuse("Cannot establish Codex process identity.")
+    return {"pid": pid, "start": start}
+
+
+def _run_wait(process: Any) -> int:
+    import signal
+
+    if sys.platform == "win32":
+        return process.wait()
+    previous = {}
+    def forward(signum: int, frame: Any) -> None:
+        try:
+            process.send_signal(signum)
+        except ProcessLookupError:
+            pass
+    try:
+        # The terminal already delivers SIGINT to the child's process group; forwarding
+        # it again would turn one Ctrl-C into Codex's double-press quit.
+        previous[signal.SIGINT] = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        for signum in (signal.SIGTERM, signal.SIGHUP):
+            previous[signum] = signal.signal(signum, forward)
+        result = process.wait()
+        return result if result >= 0 else 128 - result
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def _run_reap() -> None:
+    if sys.platform == "linux":
+        # The CLI owns its children; probes have already been reaped.
+        try:
+            while os.waitpid(-1, os.WNOHANG)[0]:
+                pass
+        except ChildProcessError:
+            pass
+
+
+def _run_finish(switcher: CodexAccountSwitcher, number: str, record: dict[str, Any],
+                result: int) -> int:
+    from claude_swap.locking import FileLock
+
+    home = Path(record["home"])
+    deadline = time.monotonic() + 1
+    while True:
+        _run_reap()
+        with FileLock(switcher.lock_file):
+            record.update(phase="finished", exitCode=result)
+            _session_write(switcher.backup_dir, home / "runs" / (record["runId"] + ".json"), record)
+            custody = slot_custody(switcher, number, completed=record["supervisor"])
+            if custody.state == "quiescent":
+                if custody.intent:
+                    recover_session_credentials(switcher, number)
+                outcome = reconcile_session(switcher, number, quiescent=True)
+                if outcome.state == "conflict":
+                    _run_refuse(f"Account {number}: session/backup identity or generation "
+                                "conflict; "
+                                f"files retained at {home}. Reconcile the login explicitly "
+                                "before retrying.")
+                return result
+            if custody.state != "live" or custody.issue_count or custody.invalid_records:
+                _run_refuse("Codex session liveness is uncertain; credential writes refused. "
+                                   f"{custody.reason}. Stop identified processes or repair scan "
+                                   "permissions, then retry.")
+        if time.monotonic() >= deadline:
+            _run_notice(f"Account {number}: capture pending; "
+                        "session-home processes are still live.")
+            return result
+        time.sleep(0.05)
+
+
+def run_session(switcher: CodexAccountSwitcher, identifier: str | None, *,
+                require_session: bool, shared: bool, codex_args: list[str],
+                env: dict[str, str], cwd: Path) -> int:
+    """Supervise one terminal run. Caller MUST refuse_inherited_home before constructing switcher.
+
+    """
+    import subprocess
+    from uuid import uuid4
+    from claude_swap import windows_job
+    from claude_swap.codex_binary import probe_codex, resolve_codex_binary
+    from claude_swap.exceptions import ClaudeSwitchError
+    from claude_swap.locking import FileLock
+
+    record, process, committed = None, None, False
+    try:
+        cwd = Path(cwd).resolve(strict=True)
+        refuse_inherited_home(env)
+        try:
+            _child_parse(codex_args, cwd=cwd)
+        except SessionError:
+            _run_notice("Unsupported Codex launch syntax.")
+            return 2
+        binary = resolve_codex_binary(env)
+        probe_codex(binary)  # Credential-free external commands stay outside R/.lock.
+        with FileLock(switcher.lock_file):
+            data = switcher._read_sequence()
+            default = switcher._read_switch_auth()
+            _require(not default or default.get("tokens") is None
+                     or isinstance(default["tokens"], dict))
+            aliases = switcher._default_session_slots(default, data) if default else []
+            if default and aliases:
+                actual, _ = extract_identity(default)
+                _require(all(same_identity(actual, extract_identity(
+                    switcher._read_session_backup(alias))[0]) for alias in aliases))
+            if identifier is None:
+                _require(len(aliases) == 1)
+                number = aliases[0]
+            else:
+                number = switcher._resolve(identifier, data)
+            if switcher._disabled_from_data(data, number):
+                _run_refuse("Disabled Codex account cannot be launched.")
+            for alias in aliases:
+                custody = _run_custody(switcher, alias, False)
+                if custody.state == "quiescent":
+                    _require(not custody.intent
+                             and classify_session(switcher, alias).state != "conflict")
+            plain = number in aliases
+            if default and not plain and isinstance(default.get("tokens"), dict):
+                saved = switcher._read_session_backup(number)
+                extract_identity(saved)
+                _require(not any(default.get("tokens", {}).get(key)
+                    and default["tokens"][key] == saved.get("tokens", {}).get(key)
+                    for key in ("access_token", "refresh_token")))
+            if plain:
+                if require_session:
+                    _run_refuse(f"Account {number} is the default login; "
+                                       "--require-session refuses an unisolated run.")
+            else:
+                if sys.platform == "darwin":
+                    _run_refuse("macOS session supervision awaits native CI validation.")
+                home, args, child = _run_prepare(switcher, number, shared, codex_args, env, cwd)
+                _run_subreaper()
+                run_id = str(uuid4())
+                record = dict(schemaVersion=1, runId=run_id, home=str(home),
+                              supervisor=_run_identity(os.getpid()), child=None, phase="starting",
+                              shared=shared, jobName=windows_job.job_name(run_id)
+                              if sys.platform == "win32" else None, exitCode=None)
+                _private_directory(home / "runs", switcher.backup_dir)
+                path = home / "runs" / (run_id + ".json")
+                def persist_child(pid: int, start: dict[str, Any]) -> None:
+                    record.update(child={"pid": pid, "start": start}, phase="running")
+                    _session_write(switcher.backup_dir, path,
+                                   validate_record(record, "run", run_id=run_id))
+                _session_write(switcher.backup_dir, path,
+                               validate_record(record, "run", run_id=run_id))
+                committed = True
+                if sys.platform == "win32":
+                    process = windows_job.launch(binary[0], args, child, str(cwd), run_id,
+                                                 persist_child)
+                else:
+                    process = subprocess.Popen(binary + args, env=child, cwd=cwd, shell=False)
+                    identity = _run_identity(process.pid)
+                    persist_child(process.pid, identity["start"])
+        if plain:
+            _run_notice("Using the default Codex login; this run is not isolated.")
+            process = subprocess.Popen(binary + codex_args, env=env, cwd=cwd, shell=False)
+            return _run_wait(process)
+        result = _run_wait(process)
+        if sys.platform == "win32":
+            process.close()
+            process = None
+        process, committed = None, False
+        return _run_finish(switcher, number, record, result)
+    except (ClaudeSwitchError, OSError, ValueError, TypeError, KeyError, RuntimeError) as exc:
+        # Session and switch errors carry fixed, token-free reasons worth showing.
+        if isinstance(exc, ClaudeSwitchError) and str(exc) != "Codex run refused.":
+            _run_notice(str(exc))
+        _run_notice("Codex session setup or capture failed; evidence retained."
+                    if committed else "Codex session was not started.")
+        if committed:
+            try:
+                if process is not None:
+                    if sys.platform == "win32":
+                        process.close()
+                    else:
+                        process.kill()
+                        process.wait()
+                _run_finish(switcher, number, record, 1)
+            except (ClaudeSwitchError, OSError, ValueError, TypeError, KeyError, RuntimeError):
+                pass
+        return 1

@@ -373,3 +373,23 @@ def test_ordinary_user_settings_do_not_block(tmp_path, key):
 def test_command_word_inside_single_prompt_is_unchanged(tmp_path):
     args = ['hi exec']
     assert session.child_argv(args, tmp_path, config_layers=[]) == ['--no-daemon'] + STORES + args
+
+
+def test_child_env_explicit_spawn_cwd(tmp_path):
+    from claude_swap.codex_session import child_env
+
+    home = tmp_path / "home"
+    home.mkdir()
+    env, warnings = child_env({"CODEX_SQLITE_HOME": "home"}, home, cwd=tmp_path)
+    assert env["CODEX_SQLITE_HOME"] == str(home)
+    assert warnings == []
+
+
+def test_child_argv_explicit_spawn_cwd(tmp_path):
+    from claude_swap.codex_session import child_argv
+
+    home = tmp_path / "home"
+    home.mkdir()
+    result = child_argv(["-c", 'sqlite_home="home"', "exec", "hi"], home,
+                        config_layers=[], cwd=tmp_path)
+    assert not any(item.startswith('sqlite_home="/') for item in result)
