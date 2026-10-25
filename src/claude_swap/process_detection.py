@@ -13,6 +13,7 @@ import logging
 import os
 import subprocess
 import sys
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -379,3 +380,253 @@ def is_codex_running() -> bool:
     except (OSError, subprocess.SubprocessError) as exc:
         logger.debug("Codex process detection failed: %s", exc)
         return False
+
+
+def _codex_boot_id(proc_root: Path) -> str:
+    boot = (proc_root / "sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+    if str(uuid.UUID(boot)) != boot:
+        raise ValueError("invalid boot identity")
+    return boot
+
+
+def _codex_linux_snapshot(pid: int, proc_root: Path, boot: str) -> tuple:
+    text = (proc_root / str(pid) / "stat").read_text(encoding="ascii", errors="surrogateescape")
+    ticks = _stat_start_ticks(text)
+    prefix, _, rest = text.rpartition(")")
+    fields = rest.split()
+    if (ticks is None or not ticks.isascii() or not text.startswith(f"{pid} (")
+            or fields[0] not in set("RSDZTtXxKWPI")
+            or not fields[1].isascii() or not fields[1].isdecimal()
+            or not fields[6].isascii() or not fields[6].isdecimal()):
+        raise ValueError("invalid process identity")
+    return ({"kind": "linux", "bootId": boot, "ticks": ticks}, fields[0],
+            int(fields[6]), int(fields[1]), prefix.partition(" (")[2])
+
+
+def _codex_pid_gone(pid: int, proc_root: Path) -> bool:
+    # A missing stat/environ alone does not prove disappearance.
+    try:
+        (proc_root / str(pid)).stat()
+    except (FileNotFoundError, ProcessLookupError):
+        try:
+            proc_root.stat()
+            return True
+        except OSError:
+            pass
+    except OSError:
+        pass
+    return False
+
+
+def codex_process_identity(pid: int, proc_root: Path = Path("/proc")) -> dict | None:
+    """Exact process start identity, or None when it cannot be acquired."""
+    if sys.platform != "linux" or type(pid) is not int or pid <= 0:
+        return None
+    try:
+        return _codex_linux_snapshot(pid, proc_root, _codex_boot_id(proc_root))[0]
+    except (OSError, ValueError):
+        return None
+
+
+def codex_process_state(pid: int, start: dict, proc_root: Path = Path("/proc")) -> str:
+    """Return alive, gone or unknown without process-name or clock heuristics."""
+    if sys.platform != "linux" or type(pid) is not int or pid <= 0:
+        return "unknown"
+    try:
+        boot = _codex_boot_id(proc_root)
+    except (OSError, ValueError):
+        return "unknown"
+    return _codex_process_state(pid, start, proc_root, boot)
+
+
+def _codex_process_state(pid: int, start: dict, proc_root: Path, boot: str) -> str:
+    if (not isinstance(start, dict) or set(start) != {"kind", "bootId", "ticks"}
+            or start["kind"] != "linux" or not isinstance(start["bootId"], str)
+            or not isinstance(start["ticks"], str) or not start["ticks"].isascii()
+            or not start["ticks"].isdecimal()):
+        return "unknown"
+    try:
+        current = _codex_linux_snapshot(pid, proc_root, boot)[0]
+    except (FileNotFoundError, ProcessLookupError):
+        return "gone" if _codex_pid_gone(pid, proc_root) else "unknown"
+    except (OSError, ValueError):
+        return "unknown"
+    return "alive" if current == start else "gone"
+
+
+def _codex_canonical_path(path: Path) -> Path:
+    try:
+        return path.resolve(strict=True)
+    except FileNotFoundError:
+        return path.resolve()
+
+
+def _codex_env_home(data: bytes, home: Path, directory: Path, proc_root: Path) -> tuple:
+    issues = []
+    if not data.endswith(b"\0"):
+        issues.append("truncated environment")
+    values = []
+    for item in data.split(b"\0")[:-1]:
+        key, separator, value = item.partition(b"=")
+        if not separator:
+            issues.append("malformed environment")
+        if key == b"CODEX_HOME" and separator:
+            values.append(value)
+    if any(value and not os.path.isabs(value) for value in values):
+        issues.append("relative CODEX_HOME")
+    if any(values):
+        try:
+            if (directory / "ns/mnt").readlink() != (proc_root / "self/ns/mnt").readlink():
+                raise ValueError("different namespace")
+        except (OSError, ValueError):
+            return False, issues + ["foreign mount namespace"]
+    matched = False
+    for value in values:
+        if not value:
+            continue
+        path = Path(os.fsdecode(value))
+        if not path.is_absolute():
+            continue
+        try:
+            path = _codex_canonical_path(path)
+            if path == home:
+                matched = True
+            else:
+                source, target = path.stat(), home.stat()
+                matched |= (source.st_dev, source.st_ino) == (target.st_dev, target.st_ino)
+        except (OSError, ValueError, RuntimeError):
+            issues.append("unresolvable CODEX_HOME")
+    if len(set(values)) > 1:
+        issues.append("contradictory CODEX_HOME")
+    return matched, issues
+
+
+def _codex_zombie_issues(pid: int, proc_root: Path, boot: str) -> list[str]:
+    task_root = proc_root / str(pid) / "task"
+    tids = [int(path.name) for path in task_root.iterdir() if path.name.isdecimal()]
+    if tids == [pid]:
+        return []
+    if not tids or any(_codex_linux_snapshot(tid, task_root, boot)[1] != "Z" for tid in tids):
+        return ["zombie leader with live threads"]
+    return []
+
+
+def _scan_codex_linux_pid(pid: int, home: Path, proc_root: Path, boot: str) -> tuple:
+    directory = proc_root / str(pid)
+    for _ in range(2):
+        try:
+            before = _codex_linux_snapshot(pid, proc_root, boot)
+            if before[2] & 0x00200000:  # PF_KTHREAD
+                return False, [], None
+            status = (directory / "status").read_text(encoding="ascii", errors="surrogateescape")
+            rows = [row.split()[1:] for row in status.splitlines() if row.startswith("Uid:")]
+            if (len(rows) != 1 or len(rows[0]) != 4
+                    or any(not uid.isascii() or not uid.isdecimal() for uid in rows[0])):
+                raise ValueError("invalid uid")
+            denied = False
+            result = (False, [])
+            if os.getuid() in [int(uid) for uid in rows[0]]:
+                try:
+                    data = (directory / "environ").read_bytes()
+                except PermissionError:
+                    denied = True
+                else:
+                    if data:
+                        result = _codex_env_home(data, home, directory, proc_root)
+                    elif before[1] == "Z":
+                        result = (False, _codex_zombie_issues(pid, proc_root, boot))
+                    else:
+                        result = (False, ["empty live environment"])
+            after = _codex_linux_snapshot(pid, proc_root, boot)
+            if before[0] != after[0]:
+                continue
+            return result[0], result[1], before if denied else None
+        except (FileNotFoundError, ProcessLookupError):
+            if _codex_pid_gone(pid, proc_root):
+                return False, [], None
+            return False, ["incomplete process data"], None
+        except (OSError, ValueError):
+            return False, ["process data unavailable"], None
+    return False, ["process identity changed during scan"], None
+
+
+def _codex_related_unreadable(snapshot: tuple, pids: set[int], proc_root: Path, boot: str) -> bool:
+    if snapshot[4].startswith("codex"):
+        return True
+    parent, seen = snapshot[3], set()
+    for _ in range(4096):
+        if parent in pids:
+            return True
+        if not parent or parent in seen:
+            return False
+        seen.add(parent)
+        try:
+            parent = _codex_linux_snapshot(parent, proc_root, boot)[3]
+        except (FileNotFoundError, ProcessLookupError):
+            return False
+        except (OSError, ValueError):
+            return True
+    return True  # Incomplete ancestry cannot exclude a writer.
+
+
+def scan_codex_home(
+    home: Path,
+    supervisors: list[tuple[int, dict]],
+    invalid_records: int = 0,
+    proc_root: Path = Path("/proc"),
+) -> dict:
+    """Scan writers twice; callers validate records and hold the store lock.
+
+    Repeat after reaping and immediately before capture under that lock.
+    Residual risk: an orphaned, non-dumpable writer not named codex* cannot
+    be attributed; the Linux supervisor will set PR_SET_CHILD_SUBREAPER.
+    Exec after the environ read keeps the environment unless replaced;
+    clearing CODEX_HOME via execve takes a process outside this home protocol.
+    Unreadable counts distinct PIDs with denied environments across both passes.
+    All invocations share one PID namespace; foreign-namespace records are
+    out of scope. Never reads run files, manifests or credentials.
+    """
+    result = {"state": "uncertain", "pids": [], "issues": [], "unreadable": 0}
+    if sys.platform != "linux":
+        result["issues"] = ["unsupported platform"]
+        return result
+    pids, issues, unreadable = set(), set(), {}
+    if invalid_records:
+        issues.add("invalid or unreadable run records")
+    try:
+        home = Path(home)
+        if not home.is_absolute():
+            raise ValueError("relative home")
+        home = _codex_canonical_path(home)
+        boot = _codex_boot_id(proc_root)
+    except (OSError, ValueError, RuntimeError):
+        result["issues"] = sorted(issues | {"home or boot identity unavailable"})
+        return result
+    for pid, start in supervisors:
+        state = _codex_process_state(pid, start, proc_root, boot)
+        if state == "alive":
+            pids.add(pid)
+        elif state == "unknown":
+            issues.add(f"PID {pid}: supervisor identity unavailable")
+    for _ in range(2):
+        try:
+            entries = list(proc_root.iterdir())
+        except OSError:
+            issues.add("process enumeration unavailable")
+            continue
+        for entry in entries:
+            if not entry.name.isascii() or not entry.name.isdecimal():
+                continue
+            pid = int(entry.name)
+            matched, errors, denied = _scan_codex_linux_pid(pid, home, proc_root, boot)
+            if matched:
+                pids.add(pid)
+            if denied is not None:
+                unreadable.setdefault(pid, []).append(denied)
+            issues.update(f"PID {pid}: {error}" for error in errors)
+    for pid, snapshots in unreadable.items():
+        if any(_codex_related_unreadable(snapshot, pids, proc_root, boot)
+               for snapshot in snapshots):
+            issues.add(f"PID {pid}: environment unreadable")
+    return {"state": "live" if pids else "uncertain" if issues else "quiescent",
+            "pids": sorted(pids), "issues": sorted(issues), "unreadable": len(unreadable)}
