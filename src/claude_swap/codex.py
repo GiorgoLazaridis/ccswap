@@ -256,22 +256,83 @@ class CodexAccountSwitcher:
         return email, account_id, mode
 
     def _account_plan(self, number: str, account: dict[str, Any], active: str | None) -> str:
-        """Plan type for one account: the stored value, else derived live.
+        """Read the effective token's plan without refreshing or capturing."""
+        with FileLock(self.lock_file):
+            effective = self._effective_account_auth(number, allow_refresh=False)
+        auth = effective["auth"]
+        return (_plan_type_from_auth(auth) if auth else "") or account.get("planType", "")
 
-        Accounts saved before ``planType`` was recorded have no stored plan, so
-        fall back to decoding the token in the active auth.json (for the live
-        account) or the account's own backup. Keeps the label correct without
-        forcing a re-add.
+    def _effective_account_auth(self, number: str, *, allow_refresh: bool) -> dict[str, Any]:
+        """Resolve authority under the caller-held store lock; never acquire it here.
+
+        Display passes False and never reconciles or refreshes. Usage may reconcile
+        quiescent homes; network refresh remains exclusively in the guarded helper.
         """
-        stored = account.get("planType")
-        if isinstance(stored, str) and stored:
-            return stored
-        auth = (
-            self._read_json(self.auth_file)
-            if number == active
-            else self._read_account_auth(number)
-        )
-        return _plan_type_from_auth(auth) if auth is not None else ""
+        from claude_swap import codex_session as cs
+        from claude_swap.exceptions import SessionError
+
+        custody = cs.slot_custody(self, number)
+        result = {"auth": None, "source": "unavailable", "custody": custody.state,
+                  "refresh": False, "reason": custody.reason,
+                  "base_url": DEFAULT_CHATGPT_BASE_URL}
+        try:
+            if custody.state == "none":
+                active = self.current_account_number() == number
+                result.update(auth=self._read_json(self.auth_file) if active else
+                              self._read_account_auth(number),
+                              source="default" if active else "backup",
+                              refresh=allow_refresh and not active,
+                              base_url=self._chatgpt_base_url())
+            elif custody.state in ("live", "quiescent"):
+                home = cs.slot_home(self, number)
+                if custody.state == "quiescent" and allow_refresh:
+                    self._guard_session_slot(number)
+                elif custody.state == "quiescent":
+                    classified = cs.classify_session(self, number)
+                    if classified.state == "conflict":
+                        raise SwitchError(classified.reason)
+                auth = None
+                for attempt in range(3):
+                    try:
+                        auth = cs.load_document(home / "auth.json")
+                        if auth is None:
+                            raise SessionError("missing auth")
+                        break
+                    except (ValueError, SessionError):
+                        if attempt == 2:
+                            raise SwitchError("busy_or_unreadable") from None
+                manifest = cs.load_record(home / ".ccswap-session.json", "manifest")
+                if not cs.same_identity(cs.extract_identity(auth)[0], manifest["identity"]):
+                    raise SwitchError("identity_conflict")
+                stored = self._read_session_backup(number)
+                if not cs.same_identity(cs.extract_identity(stored)[0], manifest["identity"]):
+                    raise SwitchError("identity_conflict")
+                h, saved = cs.auth_fingerprint(auth), cs.auth_fingerprint(stored)
+                baseline = manifest["baselineFingerprint"]
+                if h != saved and h != baseline and saved != baseline:
+                    raise SwitchError("generation_conflict")
+                if custody.state == "quiescent" and (allow_refresh or h == baseline):
+                    auth = stored
+                # Session tokens only go to the known backend. Copied routing is
+                # mutable and has no independently validated endpoint authority.
+                config = home / "config.toml"
+                if config.exists():
+                    values = tomllib.loads(config.read_text(encoding="utf-8"))
+                    if cs._CHILD_FORBIDDEN.intersection(values):
+                        raise SwitchError("unvalidated_session_routing")
+                result.update(auth=auth, source="session" if custody.state == "live" or
+                              (not allow_refresh and h != baseline) else "backup", refresh=allow_refresh and custody.state == "quiescent")
+        except (OSError, ValueError, TypeError, KeyError, SessionError, SwitchError):
+            result.update(auth=None, source="unavailable", refresh=False,
+                          reason="session_busy_unreadable_or_conflict")
+        authority = (result["source"], result["custody"], result["base_url"],
+                     cs.auth_fingerprint(result["auth"]) if result["auth"] else None)
+        authorities = getattr(self, "_usage_authorities", {})
+        if authorities.get(number) != authority:
+            self._usage_cache.pop(number, None)
+        authorities[number] = authority
+        self._usage_authorities = authorities
+        return result
 
     def _credential_path(self, number: str) -> Path:
         return self.credentials_dir / f"account-{number}.json"
@@ -742,6 +803,45 @@ class CodexAccountSwitcher:
         against either switcher.
         """
 
+    def _session_status(self, number: str) -> dict[str, Any]:
+        """Observe session state without capture, refresh or credential writes."""
+        from claude_swap import codex_session as cs, process_detection
+        from claude_swap.exceptions import SessionError
+
+        with FileLock(self.lock_file):
+            custody = cs.slot_custody(self, number)
+            state = {"none": "absent", "quiescent": "idle"}.get(custody.state, custody.state)
+            pending = state in ("live", "uncertain") or custody.intent
+            count, shared = 0, False
+            if state != "absent":
+                try:
+                    classified = cs.classify_session(self, number)
+                    if classified.state == "conflict":
+                        state = "stale" if classified.reason == "stale_intent" and custody.intent else "conflict"
+                    elif classified.state != "unchanged":
+                        pending = True
+                    if custody.intent and state == "idle":
+                        state = "stale"
+                    runs = cs.slot_home(self, number) / "runs"
+                    if runs.exists():
+                        for path in runs.iterdir():
+                            run = cs.load_record(path, "run")
+                            if run["phase"] == "finished":
+                                continue
+                            supervisor = run["supervisor"]
+                            alive = process_detection.codex_process_state(
+                                supervisor["pid"], supervisor["start"])
+                            if alive == "alive":
+                                count += 1
+                                shared |= run["shared"]
+                            elif alive == "unknown" and state != "conflict":
+                                state, pending = "uncertain", True
+                except (OSError, ValueError, TypeError, KeyError, SessionError):
+                    if state != "conflict":
+                        state, pending = "uncertain", True
+            return {"state": state, "capturePending": pending,
+                    "runCount": count, "shared": shared}
+
     def status(self, json_output: bool = False) -> dict[str, Any]:
         data = self._read_sequence()
         number = self.current_account_number()
@@ -754,6 +854,8 @@ class CodexAccountSwitcher:
             "planType": plan_type,
             "label": codex_org_label(plan_type),
         }
+        payload["sessions"] = [{"number": int(n), "session": self._session_status(n)}
+                               for n in sorted(data["accounts"], key=int)]
         if json_output:
             print(json.dumps(payload, indent=2))
         elif account:
@@ -761,6 +863,10 @@ class CodexAccountSwitcher:
             print(f"Codex Account {number}: {account['email']}{tag} (active)")
         else:
             print("No managed Codex account is currently active")
+        if not json_output:
+            for row in payload["sessions"]:
+                if row["session"]["capturePending"]:
+                    print(f"Account {row['number']}: capture pending")
         return payload
 
     def list_payload(self) -> dict[str, Any]:
@@ -783,6 +889,7 @@ class CodexAccountSwitcher:
                     "label": codex_org_label(plan),
                     "active": number == active,
                     "disabled": bool(account.get("disabled")),
+                    "session": self._session_status(number),
                 }
             )
         return {
@@ -802,6 +909,7 @@ class CodexAccountSwitcher:
             for account in accounts:
                 marker = " ● active" if account["active"] else ""
                 marker += " (disabled)" if account["disabled"] else ""
+                marker += " (capture pending)" if account["session"]["capturePending"] else ""
                 # Prefer the plan label (e.g. "Codex Team"); fall back to the
                 # auth mode for API-key logins or backups added before planType
                 # was recorded.
@@ -904,14 +1012,17 @@ class CodexAccountSwitcher:
         active = self.current_account_number()
         now = time.time()
         eligible = set(data["accounts"]) if fetch is None else fetch
-        live_auth = self._read_json(self.auth_file) if active else None
+        effective = {}
         entries: dict[str, UsageEntry] = {}
         plans: dict[str, str] = {}
 
         for number, account in data["accounts"].items():
-            auth = live_auth if number == active and live_auth is not None else self._read_account_auth(number)
+            with FileLock(self.lock_file):
+                effective[number] = self._effective_account_auth(number, allow_refresh=True)
+            auth = effective[number]["auth"]
             entry = self._usage_entry(
-                number, auth, number in eligible, now, is_active=number == active
+                number, auth, number in eligible, now, is_active=number == active,
+                effective=effective[number]
             )
             entries[number] = entry
             # Prefer the live token's plan; fall back to what was stored at add
@@ -928,7 +1039,8 @@ class CodexAccountSwitcher:
                 org_uuid=account.get("accountId", ""),
                 is_active=number == active,
                 kind="api_key" if account.get("authMode") == "api_key" else "oauth",
-                switchable=self._read_account_auth(number) is not None,
+                switchable=(effective[number]["auth"] is not None
+                            and effective[number]["custody"] in ("none", "quiescent")),
                 usage=entries[number],
                 disabled=bool(account.get("disabled")),
             )
@@ -944,6 +1056,7 @@ class CodexAccountSwitcher:
         now: float,
         *,
         is_active: bool,
+        effective: dict[str, Any] | None = None,
     ) -> UsageEntry:
         """Return a cached or freshly fetched Codex rate-limit measurement.
 
@@ -952,9 +1065,13 @@ class CodexAccountSwitcher:
         contains only read-only quota measurements and is discarded when the
         process exits instead of creating another credential-adjacent file.
         """
+        if effective is None:
+            with FileLock(self.lock_file):
+                effective = self._effective_account_auth(number, allow_refresh=True)
+        auth = effective["auth"]
         previous = self._usage_cache.get(number)
         if auth is None:
-            entry = UsageEntry(last_error="stored Codex auth.json is missing")
+            entry = UsageEntry(last_error=effective["reason"])
         elif auth.get("auth_mode") == "api_key" or (
             isinstance(auth.get("OPENAI_API_KEY"), str)
             and not isinstance(auth.get("tokens"), dict)
@@ -964,23 +1081,23 @@ class CodexAccountSwitcher:
             entry = previous or UsageEntry()
         else:
             try:
-                usage = fetch_codex_usage(auth, base_url=self._chatgpt_base_url())
+                usage = fetch_codex_usage(auth, base_url=effective["base_url"])
             except CodexUsageError as exc:
                 # A saved inactive account has no running Codex process to
                 # rotate it. Mirror Codex's own 401-recovery flow: rotate the
                 # refresh token, save the whole auth document, then retry the
                 # usage request. Never do this for the active account — Codex
                 # owns that file and may be refreshing it concurrently.
-                if exc.status_code == 401 and not is_active:
+                if exc.status_code == 401 and effective["refresh"]:
                     try:
                         refreshed_auth = self._refresh_inactive_auth(number, auth)
                         if refreshed_auth is not None:
                             usage = fetch_codex_usage(
-                                refreshed_auth, base_url=self._chatgpt_base_url()
+                                refreshed_auth, base_url=effective["base_url"]
                             )
                         else:
                             raise exc
-                    except (CodexUsageError, ConfigError) as refresh_exc:
+                    except (CodexUsageError, ConfigError, SwitchError) as refresh_exc:
                         entry = self._usage_failure_entry(previous, refresh_exc)
                     else:
                         entry = UsageEntry(last_good=usage, fetched_at=now)
