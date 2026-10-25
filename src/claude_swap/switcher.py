@@ -6370,8 +6370,14 @@ class ClaudeAccountSwitcher:
 
         current_email, current_org_uuid = identity
 
-        # Check if current account is managed
-        if not self._account_exists(current_email, current_org_uuid):
+        # Check if current account is managed. Resolve the LIVE slot (not the
+        # exact composite key): a setup-token login whose org Claude Code has
+        # since filled in is still managed, and treating it as unmanaged would
+        # auto-add it below as a duplicate slot.
+        live_num = self._find_live_account_slot(
+            self._get_sequence_data() or {}, current_email, current_org_uuid
+        )
+        if live_num is None:
             # In JSON mode, don't silently auto-add (a surprising side effect in
             # automation) — report it as a structured no-op instead.
             if json_output:
@@ -6396,23 +6402,20 @@ class ClaudeAccountSwitcher:
 
         if len(sequence) < 2:
             if json_output:
-                num = self._find_live_account_slot(data, current_email, current_org_uuid)
                 return self._switch_noop(
                     strategy=strategy_label,
                     reason="only-one-account",
-                    to_ref=account_ref(int(num), current_email) if num else None,
+                    to_ref=account_ref(int(live_num), current_email),
                     message="Only one account is managed. Add more accounts to switch between.",
                 )
             print(dimmed("Only one account is managed. Add more accounts to switch between."))
             return None
 
         active_account = data.get("activeAccountNumber")
-        # Where the user actually is right now (live identity), falling back to
-        # the recorded active slot. Used so usage-aware switching never moves
-        # them onto an account worse than their current one.
-        current_num = self._find_live_account_slot(data, current_email, current_org_uuid)
-        if current_num is None:
-            current_num = str(active_account) if active_account is not None else None
+        # Where the user actually is right now (live identity). Used so
+        # usage-aware switching never moves them onto an account worse than
+        # their current one.
+        current_num = live_num
 
         current_ref = (
             account_ref(int(current_num), current_email) if current_num else None

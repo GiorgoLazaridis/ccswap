@@ -5505,6 +5505,23 @@ class TestLiveIdentityForTokenSlots:
         active.assert_not_called()
         stored.assert_not_called()
 
+    def test_switch_rotates_instead_of_auto_adding(self, temp_home):
+        """`switch` must treat the enriched token login as managed: rotate,
+        never auto-add it as a duplicate slot."""
+        switcher = self._make_switcher(temp_home, {
+            "1": self._token_slot("me@example.com"),
+            "2": self._token_slot("other@example.com"),
+        })
+        with self._set_live(switcher, "me@example.com", self.ORG, self.TOKEN), \
+             patch.object(switcher, "_read_account_credentials", return_value=self._stored(self.TOKEN)), \
+             patch.object(switcher, "_account_is_switchable", return_value=True), \
+             patch.object(switcher, "add_account") as add, \
+             patch.object(switcher, "_perform_switch") as perform:
+            switcher.switch()
+        add.assert_not_called()
+        perform.assert_called_once()
+        assert perform.call_args.args[0] == "2"
+
     def test_login_slot_is_not_a_fallback_candidate(self, temp_home):
         """A personal /login slot (has an account uuid) keeps exact matching."""
         switcher = self._make_switcher(temp_home, {
