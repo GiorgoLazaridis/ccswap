@@ -24,7 +24,7 @@ import tomllib
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from claude_swap.codex_usage import (
     DEFAULT_CHATGPT_BASE_URL,
@@ -40,6 +40,9 @@ from claude_swap.oauth import format_reset
 from claude_swap.paths import get_backup_root
 from claude_swap.process_detection import is_codex_running
 from claude_swap.usage_store import SERVE_TTL_S, UsageEntry
+
+if TYPE_CHECKING:
+    from claude_swap.codex_session import Custody, ReconcileResult
 
 
 def _codex_restart_hint() -> str:
@@ -408,24 +411,137 @@ class CodexAccountSwitcher:
             self._write_sequence(data)
         print(f"Removed Codex Account {number} ({account['email']})")
 
+    def _guard_session_slot(self, number: str) -> Custody | ReconcileResult:
+        """Require custody and reconcile; caller must hold R/.lock."""
+        from claude_swap.codex_session import reconcile_session, slot_custody
+
+        custody = slot_custody(self, number)
+        outcome = (reconcile_session(self, number, quiescent=True)
+                   if custody.state == "quiescent" else custody)
+        if outcome.state in ("live", "uncertain", "conflict"):
+            raise SwitchError(f"Codex Account {number} session {outcome.state}: {outcome.reason}")
+        return outcome
+
+    def _default_session_slots(self, auth: dict[str, Any], data: dict[str, Any]) -> list[str]:
+        """Find strict identity aliases; legacy matching never authorizes a session."""
+        from claude_swap.codex_session import (
+            _sharing_exists, extract_identity, same_identity, slot_home,
+        )
+        from claude_swap.exceptions import SessionError
+
+        try:
+            identity, _ = extract_identity(auth)
+        except SessionError:
+            identity = None
+        matches = []
+        legacy = self._current_account_for_auth(auth, data)
+        for number in data["accounts"]:
+            stored = self._read_account_auth(number)
+            try:
+                other, _ = extract_identity(stored)
+                if identity is not None and same_identity(identity, other):
+                    matches.append(number)
+                    continue
+            except SessionError:
+                pass
+            tokens = auth.get("tokens")
+            other_tokens = stored.get("tokens") if stored else None
+            if (isinstance(tokens, dict) and isinstance(other_tokens, dict)
+                    and any(tokens.get(key) and tokens[key] == other_tokens.get(key)
+                            for key in ("access_token", "refresh_token"))
+                    and _sharing_exists(slot_home(self, number))):
+                raise SwitchError("Codex session conflict: default token alias identity is unverified")
+            if number == legacy:
+                if _sharing_exists(slot_home(self, number)):
+                    raise SwitchError("Current Codex login has no verified session identity")
+                matches.append(number)
+        return matches
+
+    def _switch_slot_snapshot(self, number: str) -> tuple:
+        """Read H, S and the complete manifest under R/.lock."""
+        from claude_swap.codex_session import _sharing_exists, load_document, load_record, slot_home
+
+        home = slot_home(self, number)
+        if not _sharing_exists(home):
+            return None, self._read_account_auth(number), None
+        return (load_document(home / "auth.json"), self._read_session_backup(number),
+                load_record(home / ".ccswap-session.json", "manifest"))
+
+    def _read_switch_auth(self, *, recheck: bool = False) -> dict[str, Any] | None:
+        """Read D through ordinary links, distinguishing absence from read failure."""
+        try:
+            auth = json.loads(self.auth_file.read_text(encoding="utf-8"))
+            if isinstance(auth, dict):
+                return auth
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError):
+            pass
+        if recheck:
+            raise SwitchError("Codex state changed during switch; retry")
+        raise ConfigError("Current Codex auth.json is unreadable; refusing to overwrite it")
+
     def switch_to(self, identifier: str, json_output: bool = False, force: bool = False) -> dict[str, Any]:
+        from claude_swap.codex_session import auth_fingerprint, extract_identity
+        from claude_swap.exceptions import SessionError
+
         del force
         with FileLock(self.lock_file):
             data = self._read_sequence()
             number = self._resolve(identifier, data)
             target = data["accounts"][number]
-            auth = self._read_account_auth(number)
-            if auth is None:
-                raise SwitchError(f"Codex Account {number} has no stored auth.json backup")
-            original_auth = self._read_json(self.auth_file)
-            if self.auth_file.exists() and original_auth is None:
-                raise ConfigError("Current Codex auth.json is unreadable; refusing to overwrite it")
+            original_auth = self._read_switch_auth()
             current = (
                 self._current_account_for_auth(original_auth, data)
                 if original_auth is not None
                 else None
             )
-            if current == number:
+            try:
+                outgoing = self._default_session_slots(original_auth, data) if original_auth else []
+            except (OSError, SessionError, ValueError, TypeError, KeyError):
+                raise SwitchError("Codex session conflict: cannot verify default aliases") from None
+            involved = list(dict.fromkeys([number, *outgoing]))
+            checking = False
+            try:
+                before = {slot: self._switch_slot_snapshot(slot) for slot in involved}
+                writes = []
+                for slot in outgoing:
+                    h, stored, manifest = before[slot]
+                    if manifest is None:
+                        if original_auth != stored:
+                            writes.append(slot)
+                        continue
+                    d, h, stored = map(auth_fingerprint, (original_auth, h, stored))
+                    b = manifest["baselineFingerprint"]
+                    # D equal to S or to the baseline holds no newer generation (A10).
+                    if number in outgoing or current == number or d in (stored, b) or (d == h and stored == b):
+                        continue
+                    if h != stored or stored != b:
+                        raise SwitchError("Codex session conflict: default credential lineage diverged")
+                    writes.append(slot)
+                outcomes = {slot: self._guard_session_slot(slot) for slot in involved}
+                checking = True
+                for slot, (h, stored, manifest) in before.items():
+                    if manifest is not None:
+                        ph, ps = map(auth_fingerprint, (h, stored))
+                        planned = ("unchanged" if ph == ps else "adopted_session"
+                                   if ps == manifest["baselineFingerprint"] else "reseeded_session")
+                        if outcomes[slot].state != planned:
+                            raise SwitchError("Codex state changed during switch; retry")
+                        value = h if outcomes[slot].state == "adopted_session" else stored
+                        expected = (value, value, dict(manifest, baselineFingerprint=auth_fingerprint(value)))
+                    else:
+                        expected = (h, stored, manifest)
+                    if auth_fingerprint({"slot": self._switch_slot_snapshot(slot)}) != auth_fingerprint({"slot": expected}):
+                        raise SwitchError("Codex state changed during switch; retry")
+                if auth_fingerprint({"D": self._read_switch_auth(recheck=True)}) != auth_fingerprint({"D": original_auth}):
+                    raise SwitchError("Codex state changed during switch; retry")
+            except (OSError, SessionError, ValueError, TypeError, KeyError):
+                raise SwitchError("Codex state changed during switch; retry" if checking else
+                                  "Codex session conflict: cannot verify switch snapshot") from None
+            if outgoing:
+                current = current if current in outgoing else outgoing[0]
+            if number in outgoing or current == number:
                 return {
                     "switched": False,
                     "from": {"number": int(number), "email": target["email"]},
@@ -437,14 +553,32 @@ class CodexAccountSwitcher:
                     "The current Codex login is unmanaged. Run 'ccswap codex add' "
                     "to preserve it before switching accounts."
                 )
-            if original_auth is not None and current is not None:
-                self._write_json(self._credential_path(current), original_auth)
+            expected_target = self._switch_slot_snapshot(number)
+            for slot in writes:
+                if before[slot][2] is not None:
+                    self._write_session_backup(slot, original_auth)
+                else:
+                    self._write_json(self._credential_path(slot), original_auth)
+                    self._usage_cache.pop(slot, None)
+            auth = self._read_account_auth(number)
+            if auth is None:
+                raise SwitchError(f"Codex Account {number} has no stored auth.json backup")
+            if not self._identity_from_auth(auth)[0]:
+                raise SwitchError(f"Codex Account {number} has an invalid stored auth.json backup")
+            if before[number][2] is not None:
+                extract_identity(auth)
+            if (auth_fingerprint({"slot": self._switch_slot_snapshot(number)}) != auth_fingerprint({"slot": expected_target})
+                    or auth_fingerprint(auth) != auth_fingerprint(expected_target[1])
+                    or auth_fingerprint({"D": self._read_switch_auth(recheck=True)}) != auth_fingerprint({"D": original_auth})):
+                raise SwitchError("Codex state changed during switch; retry")
             try:
                 self._write_json(self.auth_file, auth)
                 data["activeAccountNumber"] = int(number)
                 self._write_sequence(data)
             except Exception:
-                if original_auth is not None:
+                # An external rotation owns any different generation of D.
+                if (original_auth is not None
+                        and self._read_json(self.auth_file) in (auth, original_auth)):
                     self._write_json(self.auth_file, original_auth)
                 raise
         result = {
@@ -467,15 +601,24 @@ class CodexAccountSwitcher:
         current = self.current_account_number()
         start = numbers.index(current) + 1 if current in numbers else 0
         rotation = (numbers[(start + offset) % len(numbers)] for offset in range(len(numbers)))
-        target = next(
-            (number for number in rotation if not self._disabled_from_data(data, number)),
-            None,
-        )
-        if target is None:
-            raise SwitchError(
-                "Every managed Codex account is disabled — re-enable one first"
-            )
-        return self.switch_to(target, json_output=json_output)
+        from claude_swap.codex_session import classify_session, slot_custody
+
+        with FileLock(self.lock_file):
+            candidates = []
+            for number in rotation:
+                if self._disabled_from_data(data, number):
+                    continue
+                custody = slot_custody(self, number)
+                if custody.state == "none" or (custody.state == "quiescent"
+                        and classify_session(self, number).state != "conflict"):
+                    candidates.append(number)
+        for target in candidates:
+            try:
+                return self.switch_to(target, json_output=json_output)
+            except SwitchError as exc:
+                if "session conflict" not in str(exc):
+                    raise
+        raise SwitchError("No managed Codex account is available (disabled or session custody blocked)")
 
     @staticmethod
     def _disabled_from_data(data: dict[str, Any], number: str) -> bool:

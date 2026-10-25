@@ -14,6 +14,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import time
 import tomllib
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -295,6 +296,108 @@ def load_record(path: Path, kind: str) -> dict[str, Any] | None:
 
 
 @dataclass(frozen=True)
+class Custody:
+    """Fixed custody reasons; counts and PIDs are diagnostic only."""
+
+    state: str
+    reason: str
+    pids: tuple[int, ...] = ()
+    invalid_records: int = 0
+    issue_count: int = 0
+
+
+def slot_home(switcher: CodexAccountSwitcher, number: str) -> Path:
+    """Locate a slot from current metadata, without reading credentials."""
+    _require(_decimal(number, positive=True) and not number.startswith("0"))
+    sequence = load_document(switcher.sequence_file)
+    slot = sequence["accounts"][number]
+    _require(_text(slot["email"]))
+    return switcher.backup_dir / "codex" / "sessions" / (
+        f"{number}-{slugify_email(slot['email'].strip().casefold())}"
+    )
+
+
+def slot_custody(switcher: CodexAccountSwitcher, number: str) -> Custody:
+    """Observe custody under caller-held R/.lock; never refresh or launch.
+
+    A7 path checks exclude hostile same-uid swaps. A8 attribution and residual
+    orphan limitations are implemented by scan_codex_home. An existing session
+    with a missing default home yields conflict/invalid_home.
+    """
+    from claude_swap import process_detection, windows_job
+
+    invalid, records = 0, []
+    try:
+        home = slot_home(switcher, number)
+        parent = switcher.backup_dir
+        for part in home.parent.relative_to(parent).parts:
+            parent = parent / part
+            if not _ordinary(parent, directory=True):
+                return Custody("none", "no_session_home")
+        if _sharing_exists(home.parent / f".{home.name}.stale.json"):
+            return Custody("conflict", "stale_intent")
+        if not _ordinary(home, directory=True):
+            return Custody("none", "no_session_home")
+        _checked_parents(home, switcher.backup_dir)
+        _owned(home)
+        manifest = load_record(home / ".ccswap-session.json", "manifest")
+        _require(manifest is not None and manifest["home"] == str(home)
+                 and manifest["accountNumber"] == number
+                 and manifest["sourceHome"] == str(switcher.codex_home.resolve(strict=True))
+                 and manifest["bootstrapState"] == "ready")
+        slot = load_document(switcher.sequence_file)["accounts"][number]
+        _require(slot["accountId"] == manifest["identity"]["workspaceId"]
+                 and slot["email"].strip().casefold() == manifest["identity"]["email"]
+                 and not home.is_relative_to(switcher.codex_home.resolve())
+                 and not switcher.codex_home.resolve().is_relative_to(home))
+        runs = home / "runs"
+        if _ordinary(runs, directory=True):
+            for path in runs.iterdir():
+                try:
+                    record = load_record(path, "run")
+                    _require(record is not None and record["home"] == str(home))
+                    records.append(record)
+                except (OSError, ValueError, SessionError):
+                    invalid += 1
+    except (OSError, ValueError, TypeError, KeyError, SessionError):
+        return Custody("conflict", "invalid_home")
+    supervisors = [(r["supervisor"]["pid"], r["supervisor"]["start"])
+                   for r in records if r["phase"] != "finished"]
+    if sys.platform in ("linux", "darwin"):
+        scan = process_detection.scan_codex_home(home, supervisors, invalid)
+        return Custody(scan["state"], "writers_present" if scan["state"] == "live" else (
+            "incomplete_scan" if scan["state"] == "uncertain" else "no_writers"),
+            tuple(scan["pids"]), invalid, len(scan["issues"]))
+    if sys.platform != "win32":
+        return Custody("uncertain", "unsupported_platform", invalid_records=invalid)
+    pids, issues = set(), invalid
+    deadline = time.monotonic() + 10
+    for record in records:
+        job = windows_job.query_job(record["runId"])
+        if job == "alive":
+            pids.add(record["supervisor"]["pid"])
+        elif job != "gone":
+            issues += 1
+        # Finished drops reservations; A6 still needs both identities gone after job disappearance.
+        for identity in (record["supervisor"], record["child"]):
+            if identity is None:
+                continue
+            state = windows_job.process_state(identity["pid"], identity["start"])
+            if job == "gone" and state != "gone":
+                state = windows_job.wait_identity_gone(
+                    identity["pid"], identity["start"], max(0, deadline - time.monotonic()))
+                issues += state != "gone"
+            elif state == "alive":
+                if identity != record["supervisor"] or record["phase"] != "finished":
+                    pids.add(identity["pid"])
+            elif state != "gone":
+                issues += 1
+    state = "live" if pids else "uncertain" if issues else "quiescent"
+    return Custody(state, {"live": "writers_present", "uncertain": "incomplete_scan",
+                          "quiescent": "no_writers"}[state], tuple(sorted(pids)), invalid, issues)
+
+
+@dataclass(frozen=True)
 class ReconcileResult:
     """Report custody changes without exposing credential contents."""
 
@@ -303,7 +406,7 @@ class ReconcileResult:
 
 
 def reconcile_session(
-    switcher: CodexAccountSwitcher, number: str, *, quiescent: bool,
+    switcher: CodexAccountSwitcher, number: str, *, quiescent: bool, read_only: bool = False,
 ) -> ReconcileResult:
     """Apply D6 under the caller-held R/.lock after a fresh quiescence check.
 
@@ -370,11 +473,15 @@ def reconcile_session(
         if h == s:
             pass
         elif s == b:
+            if read_only:
+                return ReconcileResult("adopted_session")
             reason = "backup_write_failed"
             switcher._write_session_backup(number, current)
             state = "adopted_session"
             credential_directories = [switcher.credentials_dir]
         elif h == b:
+            if read_only:
+                return ReconcileResult("reseeded_session")
             reason = "auth_write_failed"
             _session_write(root, home / "auth.json", stored)
             h = s
@@ -382,6 +489,8 @@ def reconcile_session(
             credential_directories = [home]
         else:
             return ReconcileResult("conflict", "both_moved")
+        if read_only:
+            return ReconcileResult(state)
         if h != b:
             # Also invalidate after interrupted adoption where H == S but B is stale.
             switcher._usage_cache.pop(number, None)
@@ -395,6 +504,11 @@ def reconcile_session(
         return ReconcileResult(state)
     except (OSError, ValueError, TypeError, RecursionError, SessionError):
         return ReconcileResult("conflict", reason)
+
+
+def classify_session(switcher: CodexAccountSwitcher, number: str) -> ReconcileResult:
+    """Classify D6 without writes, using reconciliation's exact checks; lock required."""
+    return reconcile_session(switcher, number, quiescent=True, read_only=True)
 
 
 def _ordinary(path: Path, *, directory: bool = False) -> bool:
