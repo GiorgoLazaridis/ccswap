@@ -357,7 +357,9 @@ def fetch_codex_usage(
             f"Codex usage request failed ({exc.code})", status_code=exc.code
         ) from exc
     except (urllib.error.URLError, OSError) as exc:
-        raise CodexUsageError(f"Codex usage request failed: {exc.reason}") from exc
+        raise CodexUsageError(
+            f"Codex usage request failed: {getattr(exc, 'reason', exc)}"
+        ) from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise CodexUsageError(f"Could not decode Codex usage response: {exc}") from exc
     usage = _convert_payload(payload)
@@ -435,7 +437,9 @@ def refresh_codex_auth(
             f"Codex token refresh failed ({exc.code})", status_code=exc.code
         ) from exc
     except (urllib.error.URLError, OSError) as exc:
-        raise CodexUsageError(f"Codex token refresh failed: {exc.reason}") from exc
+        raise CodexUsageError(
+            f"Codex token refresh failed: {getattr(exc, 'reason', exc)}"
+        ) from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise CodexUsageError(f"Could not decode Codex token refresh response: {exc}") from exc
 
