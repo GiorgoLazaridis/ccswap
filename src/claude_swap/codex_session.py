@@ -473,7 +473,7 @@ def _sharing_path(path: Path, source: Path) -> bool:
 
 def _sharing_exists(path: Path) -> bool:
     try:
-        path.lstat()
+        os.lstat(path)
         return True
     except (FileNotFoundError, NotADirectoryError):
         return False

@@ -875,6 +875,11 @@ def test_bootstrap_allowlist_retains_all_on_conflict(bootstrap, monkeypatch, ent
     root, source, home, stage = interrupted_stage(bootstrap, monkeypatch)
     leftover = stage / "auth.json.abcdefgh.tmp"
     leftover.write_text("synthetic-leftover")
+    # Probe this directory rather than assuming the host OS dictates case sensitivity.
+    if (stage / "auth.json.ABCDEFGH.tmp").exists():
+        distinct = stage / "auth.json.ijklmnop.tmp"
+        leftover.rename(distinct)
+        leftover = distinct
     path = stage / entry
     if entry.endswith("link"):
         path.symlink_to(stage / "missing")
@@ -1401,15 +1406,20 @@ def test_sharing_os_lstat_denied_nothing_removed(sharing, monkeypatch, target):
     (source / "config.toml").unlink()
     denied = (source if target == "source" else home) / "config.toml"
     lstat = os.lstat
+    intercepted = []
+    receipt = (home / ".ccswap-session.json").read_bytes()
 
     def forbidden(path, *args, **kwargs):
-        if os.fspath(path) == str(denied):
+        if codex_session._same_link(os.fspath(path), str(denied)):
+            intercepted.append(path)
             raise PermissionError(13, "synthetic-sensitive-value")
         return lstat(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "lstat", forbidden)
     with pytest.raises(SessionError):
         sharing_call((root, source, home, result))
+    assert intercepted
+    assert (home / ".ccswap-session.json").read_bytes() == receipt
     assert_link(home / "config.toml", source / "config.toml")
 
 
