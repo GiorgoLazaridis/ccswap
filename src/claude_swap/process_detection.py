@@ -8,9 +8,12 @@ currently running. Uses the same mechanism Claude Code itself uses internally.
 from __future__ import annotations
 
 import calendar
+import ctypes
+import functools
 import json
 import logging
 import os
+import platform
 import subprocess
 import sys
 import uuid
@@ -420,9 +423,11 @@ def _codex_pid_gone(pid: int, proc_root: Path) -> bool:
 
 def codex_process_identity(pid: int, proc_root: Path = Path("/proc")) -> dict | None:
     """Exact process start identity, or None when it cannot be acquired."""
-    if sys.platform != "linux" or type(pid) is not int or pid <= 0:
+    if sys.platform not in ("linux", "darwin") or type(pid) is not int or pid <= 0:
         return None
     try:
+        if sys.platform == "darwin":
+            return _codex_macos_snapshot(pid, proc_root, _codex_macos_boot())[0]
         return _codex_linux_snapshot(pid, proc_root, _codex_boot_id(proc_root))[0]
     except (OSError, ValueError):
         return None
@@ -430,16 +435,18 @@ def codex_process_identity(pid: int, proc_root: Path = Path("/proc")) -> dict | 
 
 def codex_process_state(pid: int, start: dict, proc_root: Path = Path("/proc")) -> str:
     """Return alive, gone or unknown without process-name or clock heuristics."""
-    if sys.platform != "linux" or type(pid) is not int or pid <= 0:
+    if sys.platform not in ("linux", "darwin") or type(pid) is not int or pid <= 0:
         return "unknown"
     try:
-        boot = _codex_boot_id(proc_root)
+        boot = _codex_macos_boot() if sys.platform == "darwin" else _codex_boot_id(proc_root)
     except (OSError, ValueError):
         return "unknown"
     return _codex_process_state(pid, start, proc_root, boot)
 
 
 def _codex_process_state(pid: int, start: dict, proc_root: Path, boot: str) -> str:
+    if sys.platform == "darwin":
+        return _codex_macos_state(pid, start, proc_root, boot)
     if (not isinstance(start, dict) or set(start) != {"kind", "bootId", "ticks"}
             or start["kind"] != "linux" or not isinstance(start["bootId"], str)
             or not isinstance(start["ticks"], str) or not start["ticks"].isascii()
@@ -478,7 +485,7 @@ def _codex_env_home(data: bytes, home: Path, directory: Path, proc_root: Path) -
         issues.append("truncated CODEX_HOME")
     if any(value and not os.path.isabs(value) for value in values):
         issues.append("relative CODEX_HOME")
-    if any(values):
+    if any(values) and sys.platform == "linux":
         try:
             if (directory / "ns/mnt").readlink() != (proc_root / "self/ns/mnt").readlink():
                 raise ValueError("different namespace")
@@ -567,7 +574,8 @@ def _codex_related_unreadable(snapshot: tuple, pids: set[int], proc_root: Path, 
             return False
         seen.add(parent)
         try:
-            parent = _codex_linux_snapshot(parent, proc_root, boot)[3]
+            reader = _codex_macos_snapshot if sys.platform == "darwin" else _codex_linux_snapshot
+            parent = reader(parent, proc_root, boot)[3]
         except (FileNotFoundError, ProcessLookupError):
             return False
         except (OSError, ValueError):
@@ -592,9 +600,11 @@ def scan_codex_home(
     (e.g. rewritten by setproctitle) across both passes.
     All invocations share one PID namespace; foreign-namespace records are
     out of scope. Never reads run files, manifests or credentials.
+    macOS remains gated (no CLI) until the native macOS CI test passes.
+    Its denied-environment attribution has the same orphan/name limitation.
     """
     result = {"state": "uncertain", "pids": [], "issues": [], "unreadable": 0}
-    if sys.platform != "linux":
+    if sys.platform not in ("linux", "darwin"):
         result["issues"] = ["unsupported platform"]
         return result
     pids, issues, unreadable = set(), set(), {}
@@ -605,7 +615,7 @@ def scan_codex_home(
         if not home.is_absolute():
             raise ValueError("relative home")
         home = _codex_canonical_path(home)
-        boot = _codex_boot_id(proc_root)
+        boot = _codex_macos_boot() if sys.platform == "darwin" else _codex_boot_id(proc_root)
     except (OSError, ValueError, RuntimeError):
         result["issues"] = sorted(issues | {"home or boot identity unavailable"})
         return result
@@ -617,15 +627,15 @@ def scan_codex_home(
             issues.add(f"PID {pid}: supervisor identity unavailable")
     for _ in range(2):
         try:
-            entries = list(proc_root.iterdir())
-        except OSError:
+            entries = (_codex_macos_pids() if sys.platform == "darwin" else
+                       [int(p.name) for p in proc_root.iterdir()
+                        if p.name.isascii() and p.name.isdecimal()])
+        except (OSError, ValueError):
             issues.add("process enumeration unavailable")
             continue
-        for entry in entries:
-            if not entry.name.isascii() or not entry.name.isdecimal():
-                continue
-            pid = int(entry.name)
-            matched, errors, denied = _scan_codex_linux_pid(pid, home, proc_root, boot)
+        for pid in entries:
+            scanner = _scan_codex_macos_pid if sys.platform == "darwin" else _scan_codex_linux_pid
+            matched, errors, denied = scanner(pid, home, proc_root, boot)
             if matched:
                 pids.add(pid)
             if denied is not None:
@@ -637,3 +647,229 @@ def scan_codex_home(
             issues.add(f"PID {pid}: environment unreadable")
     return {"state": "live" if pids else "uncertain" if issues else "quiescent",
             "pids": sorted(pids), "issues": sorted(issues), "unreadable": len(unreadable)}
+
+
+class _MacTimeval(ctypes.Structure):
+    _fields_ = [("tv_sec", ctypes.c_int64), ("tv_usec", ctypes.c_int32)]
+
+
+@functools.cache
+def _codex_macos_abi(arch: str) -> type[ctypes.Structure]:
+    """XNU xnu-12377.121.6 LP64 field order; no guessed offsets/packing.
+
+    bsd/sys/proc.h:extern_proc; sys/sysctl.h:_pcred/_ucred/eproc/kinfo_proc;
+    sys/vm.h:vmspace; sys/time.h:itimerval; sys/_types/_timeval.h.
+    sys/types.h and sys/_types.h supply integer widths; param.h/syslimits.h
+    give MAXCOMLEN=16, NGROUPS=16. i386/arm/_types.h both use long time_t;
+    neither adds LP64 packing. mach/{i386,arm}/boolean.h differs in signedness.
+    """
+    if arch not in ("x86_64", "arm64"):
+        raise ValueError("unsupported macOS ABI")
+    I, U, P, C = ctypes.c_int32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_char
+    H, B, Q = ctypes.c_int16, ctypes.c_ubyte, ctypes.c_uint64
+
+    class Links(ctypes.Structure):
+        _fields_ = [("__p_forw", P), ("__p_back", P)]
+
+    class Start(ctypes.Union):
+        _fields_ = [("p_st1", Links), ("__p_starttime", _MacTimeval)]
+
+    class Timer(ctypes.Structure):
+        _fields_ = [("it_interval", _MacTimeval), ("it_value", _MacTimeval)]
+
+    class ExternProc(ctypes.Structure):
+        _fields_ = [
+            ("p_un", Start), ("p_vmspace", P), ("p_sigacts", P), ("p_flag", I),
+            ("p_stat", C), ("p_pid", I), ("p_oppid", I), ("p_dupfd", I),
+            ("user_stack", P), ("exit_thread", P), ("p_debugger", I),
+            ("sigwait", U if arch == "x86_64" else I), ("p_estcpu", U),
+            ("p_cpticks", I), ("p_pctcpu", U), ("p_wchan", P), ("p_wmesg", P),
+            ("p_swtime", U), ("p_slptime", U), ("p_realtimer", Timer),
+            ("p_rtime", _MacTimeval), ("p_uticks", Q), ("p_sticks", Q),
+            ("p_iticks", Q), ("p_traceflag", I), ("p_tracep", P), ("p_siglist", I),
+            ("p_textvp", P), ("p_holdcnt", I), ("p_sigmask", U), ("p_sigignore", U),
+            ("p_sigcatch", U), ("p_priority", B), ("p_usrpri", B), ("p_nice", C),
+            ("p_comm", C * 17), ("p_pgrp", P), ("p_addr", P),
+            ("p_xstat", ctypes.c_uint16), ("p_acflag", ctypes.c_uint16), ("p_ru", P)]
+
+    class Pcred(ctypes.Structure):
+        _fields_ = [("pc_lock", C * 72), ("pc_ucred", P), ("p_ruid", U),
+                    ("p_svuid", U), ("p_rgid", U), ("p_svgid", U), ("p_refcnt", I)]
+
+    class Ucred(ctypes.Structure):
+        _fields_ = [("cr_ref", I), ("cr_uid", U), ("cr_ngroups", H), ("cr_groups", U * 16)]
+
+    class Vmspace(ctypes.Structure):
+        _fields_ = [("vm_refcnt", I), ("vm_shm", P), ("vm_rssize", I), ("vm_swrss", I),
+                    ("vm_tsize", I), ("vm_dsize", I), ("vm_ssize", I),
+                    ("vm_taddr", P), ("vm_daddr", P), ("vm_maxsaddr", P)]
+
+    class Eproc(ctypes.Structure):
+        _fields_ = [("e_paddr", P), ("e_sess", P), ("e_pcred", Pcred), ("e_ucred", Ucred),
+                    ("e_vm", Vmspace), ("e_ppid", I), ("e_pgid", I), ("e_jobc", H),
+                    ("e_tdev", I), ("e_tpgid", I), ("e_tsess", P), ("e_wmesg", C * 8),
+                    ("e_xsize", I), ("e_xrssize", H), ("e_xccount", H), ("e_xswrss", H),
+                    ("e_flag", I), ("e_login", C * 12), ("e_spare", I * 4)]
+
+    class KinfoProc(ctypes.Structure):
+        _fields_ = [("kp_proc", ExternProc), ("kp_eproc", Eproc)]
+
+    if ctypes.sizeof(P) != 8 or ctypes.sizeof(KinfoProc) != 648:
+        raise ValueError("macOS ABI size mismatch")
+    assert ctypes.sizeof(KinfoProc) == 648
+    return KinfoProc
+
+
+def _codex_macos_sysctl(mib: tuple[int, ...] | str) -> bytes:
+    _codex_macos_abi(platform.machine())  # Refuse unsupported ABI before calling libc.
+    try:
+        libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+        call = libc.sysctlbyname if isinstance(mib, str) else libc.sysctl
+    except AttributeError:
+        raise OSError("sysctl unavailable") from None
+    tail = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p, ctypes.c_size_t]
+    call.argtypes = ([ctypes.c_char_p] if isinstance(mib, str) else
+                     [ctypes.POINTER(ctypes.c_int), ctypes.c_uint]) + tail
+    call.restype = ctypes.c_int
+    args = [mib.encode("ascii")] if isinstance(mib, str) else [(ctypes.c_int * len(mib))(*mib), len(mib)]
+    size = ctypes.c_size_t()
+    if call(*args, None, ctypes.byref(size), None, 0):
+        raise OSError(ctypes.get_errno(), "sysctl unavailable")
+    if not isinstance(mib, str) and mib[:2] == (1, 49):
+        maximum = _codex_macos_sysctl((1, 8))
+        if len(maximum) != 4:
+            raise ValueError("invalid argument limit")
+        limit = ctypes.c_int32.from_buffer_copy(maximum).value
+        if limit <= 0 or size.value > limit + 4:
+            raise ValueError("invalid argument limit")
+        size.value = limit + 4
+    if not 0 <= size.value <= 64 * 1024 * 1024:
+        raise ValueError("invalid sysctl size")
+    buffer = ctypes.create_string_buffer(size.value)
+    capacity = size.value
+    if call(*args, buffer, ctypes.byref(size), None, 0):
+        raise OSError(ctypes.get_errno(), "sysctl unavailable")
+    if size.value > capacity or (not isinstance(mib, str) and mib[:2] == (1, 49)
+                                 and size.value == capacity):
+        raise ValueError("truncated sysctl buffer")
+    return buffer.raw[:size.value]
+
+
+def _codex_macos_rows(data: bytes) -> list:
+    row = _codex_macos_abi(platform.machine())
+    if len(data) % ctypes.sizeof(row):
+        raise ValueError("macOS ABI size mismatch")
+    return [row.from_buffer_copy(data, i) for i in range(0, len(data), ctypes.sizeof(row))]
+
+
+def _codex_macos_boot() -> str:
+    # kern_sysctl.c:SYSCTL_STRING(_kern, OID_AUTO, bootsessionuuid) exposes the
+    # boot UUID. Prefer it to kern.boottime, which can move with clock changes.
+    data = _codex_macos_sysctl("kern.bootsessionuuid")
+    if len(data) != 37 or data[-1:] != b"\0":
+        raise ValueError("invalid boot identity")
+    boot = data[:-1].decode("ascii")
+    if str(uuid.UUID(boot)) != boot:
+        raise ValueError("invalid boot identity")
+    return boot
+
+
+def _codex_macos_pids() -> list[int]:
+    rows = _codex_macos_rows(_codex_macos_sysctl((1, 14, 5, os.getuid())))
+    if any(r.kp_proc.p_pid <= 0 or r.kp_eproc.e_ucred.cr_uid != os.getuid() for r in rows):
+        raise ValueError("invalid process enumeration")
+    return [r.kp_proc.p_pid for r in rows]
+
+
+def _codex_macos_snapshot(pid: int, proc_root: Path, boot: str) -> tuple:
+    if type(pid) is not int or not 0 < pid <= 2147483647:
+        raise ValueError("invalid pid")
+    try:
+        data = _codex_macos_sysctl((1, 14, 1, pid))
+    except OSError:
+        raise ValueError("process query unavailable") from None
+    rows = _codex_macos_rows(data)
+    if not rows:
+        raise ProcessLookupError
+    if len(rows) != 1 or rows[0].kp_proc.p_pid != pid:
+        raise ValueError("invalid process identity")
+    proc, extra = rows[0].kp_proc, rows[0].kp_eproc
+    tv = getattr(proc.p_un, "__p_starttime")  # proc.h p_starttime union alias.
+    if tv.tv_sec <= 0 or not 0 <= tv.tv_usec < 1000000 or proc.p_stat not in b"\1\2\3\4\5":
+        raise ValueError("invalid process identity")
+    # A3 uniqueId encodes p_starttime in integer microseconds, without clock slack.
+    return ({"kind": "macos", "bootId": boot, "uniqueId": str(tv.tv_sec * 1000000 + tv.tv_usec)},
+            proc.p_stat, extra.e_ucred.cr_uid, extra.e_ppid, os.fsdecode(proc.p_comm))
+
+
+def _codex_macos_state(pid: int, start: dict, proc_root: Path, boot: str) -> str:
+    if (not isinstance(start, dict) or set(start) != {"kind", "bootId", "uniqueId"}
+            or start["kind"] != "macos" or not isinstance(start["bootId"], str)
+            or not isinstance(start["uniqueId"], str) or not start["uniqueId"].isascii()
+            or not start["uniqueId"].isdecimal()):
+        return "unknown"
+    try:
+        current = _codex_macos_snapshot(pid, proc_root, boot)[0]
+    except ProcessLookupError:
+        return "gone"
+    except (OSError, ValueError):
+        return "unknown"
+    return "alive" if current == start else "gone"
+
+
+def _codex_macos_environment(data: bytes) -> bytes:
+    """kern_sysctl.c:sysctl_procargsx: argc, exec path, NUL padding, argv, env.
+
+    sysctl_procargs_no_read / omit_env_vars can succeed without any env.
+    Missing env payload is denied, never a complete negative environment.
+    """
+    if len(data) < 4:
+        raise ValueError("truncated procargs")
+    argc = ctypes.c_int32.from_buffer_copy(data).value
+    if argc <= 0 or argc > len(data):
+        raise ValueError("invalid argc")
+    end = data.find(b"\0", 4)
+    if end <= 4:
+        raise ValueError("invalid executable path")
+    pos = end + 1
+    while pos < len(data) and data[pos] == 0:
+        pos += 1
+    for _ in range(argc):
+        end = data.find(b"\0", pos)
+        if end < 0:
+            raise ValueError("truncated argv")
+        pos = end + 1
+    env = data[pos:]
+    if not env or not env.strip(b"\0"):
+        raise PermissionError("environment unavailable")
+    if not env.endswith(b"\0"):
+        raise ValueError("truncated environment")
+    return env.rstrip(b"\0") + b"\0"
+
+
+def _scan_codex_macos_pid(pid: int, home: Path, proc_root: Path, boot: str) -> tuple:
+    for _ in range(2):
+        try:
+            before = _codex_macos_snapshot(pid, proc_root, boot)
+            if before[2] != os.getuid() or before[1] == b"\5":
+                if before[0] != _codex_macos_snapshot(pid, proc_root, boot)[0]:
+                    continue
+                return False, [], None
+            denied, result = False, (False, [])
+            try:
+                env = _codex_macos_environment(_codex_macos_sysctl((1, 49, pid)))
+                result = _codex_env_home(env, home, proc_root, proc_root)
+            except PermissionError:
+                denied = True
+            except OSError:
+                _codex_macos_snapshot(pid, proc_root, boot)  # Prove disappearance.
+                return False, ["process data unavailable"], None
+            after = _codex_macos_snapshot(pid, proc_root, boot)
+            if before[0] != after[0]:
+                continue
+            return result[0], result[1], before if denied else None
+        except ProcessLookupError:
+            return False, [], None
+        except (OSError, ValueError):
+            return False, ["process data unavailable"], None
+    return False, ["process identity changed during scan"], None

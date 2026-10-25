@@ -830,7 +830,7 @@ def test_codex_enumeration_failure_and_unsupported(codex_proc, tmp_path, monkeyp
     root, _ = codex_proc
     with patch.object(Path, "iterdir", side_effect=PermissionError):
         assert detection.scan_codex_home(tmp_path, [], proc_root=root)["state"] == "uncertain"
-    monkeypatch.setattr(detection.sys, "platform", "darwin")
+    monkeypatch.setattr(detection.sys, "platform", "freebsd")
     assert detection.codex_process_identity(42, root) is None
     assert detection.codex_process_state(42, {}, root) == "unknown"
     assert detection.scan_codex_home(tmp_path, [], proc_root=root) == {
