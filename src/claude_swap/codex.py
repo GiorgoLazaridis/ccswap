@@ -482,7 +482,13 @@ class CodexAccountSwitcher:
         raise ConfigError("Current Codex auth.json is unreadable; refusing to overwrite it")
 
     def switch_to(self, identifier: str, json_output: bool = False, force: bool = False) -> dict[str, Any]:
-        from claude_swap.codex_session import auth_fingerprint, extract_identity
+        """Switch under R/.lock; Codex itself does not take this lock.
+
+        A residual race remains between the final D check and activation write.
+        """
+        from claude_swap.codex_session import (
+            auth_fingerprint, default_write_decision, extract_identity, with_baseline,
+        )
         from claude_swap.exceptions import SessionError
 
         del force
@@ -511,12 +517,12 @@ class CodexAccountSwitcher:
                         if original_auth != stored:
                             writes.append(slot)
                         continue
-                    d, h, stored = map(auth_fingerprint, (original_auth, h, stored))
-                    b = manifest["baselineFingerprint"]
-                    # D equal to S or to the baseline holds no newer generation (A10).
-                    if number in outgoing or current == number or d in (stored, b) or (d == h and stored == b):
+                    if number in outgoing or current == number:
                         continue
-                    if h != stored or stored != b:
+                    decision = default_write_decision(original_auth, h, stored, manifest)
+                    if decision == "skip":
+                        continue
+                    if decision == "conflict":
                         raise SwitchError("Codex session conflict: default credential lineage diverged")
                     writes.append(slot)
                 outcomes = {slot: self._guard_session_slot(slot) for slot in involved}
@@ -529,7 +535,7 @@ class CodexAccountSwitcher:
                         if outcomes[slot].state != planned:
                             raise SwitchError("Codex state changed during switch; retry")
                         value = h if outcomes[slot].state == "adopted_session" else stored
-                        expected = (value, value, dict(manifest, baselineFingerprint=auth_fingerprint(value)))
+                        expected = (value, value, with_baseline(manifest, auth_fingerprint(value)))
                     else:
                         expected = (h, stored, manifest)
                     if auth_fingerprint({"slot": self._switch_slot_snapshot(slot)}) != auth_fingerprint({"slot": expected}):
@@ -555,6 +561,8 @@ class CodexAccountSwitcher:
                 )
             expected_target = self._switch_slot_snapshot(number)
             for slot in writes:
+                if auth_fingerprint({"D": self._read_switch_auth(recheck=True)}) != auth_fingerprint({"D": original_auth}):
+                    raise SwitchError("Codex state changed during switch; retry")
                 if before[slot][2] is not None:
                     self._write_session_backup(slot, original_auth)
                 else:

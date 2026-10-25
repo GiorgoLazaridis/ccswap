@@ -115,12 +115,7 @@ def extract_identity(auth: object) -> tuple[dict[str, Any], str | None]:
             _text(tokens[field]) for field in ("id_token", "access_token", "refresh_token")
         ))
         if "last_refresh" in data:
-            timestamp = data["last_refresh"]
-            _require(isinstance(timestamp, str) and bool(re.fullmatch(
-                r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
-                r"(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})", timestamp,
-            )))
-            datetime.fromisoformat(timestamp)
+            _refresh_timestamp(data["last_refresh"])
         if "oauth_provenance" in tokens:
             provenance = _object(tokens["oauth_provenance"], ("issuer", "client_id"))
             _require(all(isinstance(provenance[field], str) for field in ("issuer", "client_id")))
@@ -223,8 +218,12 @@ def validate_record(value: object, kind: str, *, run_id: str | None = None) -> d
             _require(_hex(data["oldFingerprint"]) and _hex(data["newFingerprint"]))
             _require(data["reason"] in ("replacement", "refresh"))
         else:
-            _object(data, ("sourceHome", "baselineFingerprint", "bootstrapState", "sharedItems"))
+            _object(data, ("sourceHome", "baselineFingerprint", "lineage", "bootstrapState", "sharedItems"))
             _require(_absolute(data["sourceHome"]) and _hex(data["baselineFingerprint"]))
+            lineage = data["lineage"]
+            _require(isinstance(lineage, list) and 1 <= len(lineage) <= 64
+                     and all(_hex(item) for item in lineage)
+                     and lineage[-1] == data["baselineFingerprint"])
             _require(data["bootstrapState"] in ("ready", "preparing"))
             _require(isinstance(data["sharedItems"], dict))
             for destination, item in data["sharedItems"].items():
@@ -498,12 +497,51 @@ def reconcile_session(
             for directory in credential_directories:
                 _sync_directory(directory)
             reason = "manifest_write_failed"
-            _session_write(root, manifest_path, dict(manifest, baselineFingerprint=h))
+            _session_write(root, manifest_path, with_baseline(manifest, h))
             reason = "manifest_sync_failed"
             _sync_directory(home)
         return ReconcileResult(state)
     except (OSError, ValueError, TypeError, RecursionError, SessionError):
         return ReconcileResult("conflict", reason)
+
+
+def with_baseline(manifest: dict[str, Any], fingerprint: str) -> dict[str, Any]:
+    """Advance the baseline and bounded lineage together, without mutating input."""
+    lineage = manifest["lineage"]
+    if fingerprint != manifest["baselineFingerprint"]:
+        lineage = (lineage + [fingerprint])[-64:]
+    return dict(manifest, baselineFingerprint=fingerprint, lineage=lineage)
+
+
+def _refresh_timestamp(value: object) -> datetime:
+    """Parse Codex's timezone-aware last_refresh without guessing a timezone."""
+    _require(isinstance(value, str) and bool(re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}"
+        r"(?:\.[0-9]+)?(?:[Zz]|[+-][0-9]{2}:[0-9]{2})", value,
+    )))
+    parsed = datetime.fromisoformat(value.replace("t", "T").replace("z", "Z"))
+    _require(parsed.utcoffset() is not None)
+    return parsed
+
+
+def default_write_decision(
+    d_auth: dict[str, Any], h_auth: dict[str, Any], s_auth: dict[str, Any], manifest: dict[str, Any],
+) -> str:
+    """Classify D -> S under A10; never infer generation order from fingerprints."""
+    try:
+        validate_record(manifest, "manifest")
+        d, h, s = map(auth_fingerprint, (d_auth, h_auth, s_auth))
+        b = manifest["baselineFingerprint"]
+        if d == s or d in manifest["lineage"] or (d == h and s == b):
+            return "skip"
+        if h == s == b:
+            d_time = _refresh_timestamp(d_auth.get("last_refresh"))
+            s_time = _refresh_timestamp(s_auth.get("last_refresh"))
+            if d_time > s_time:
+                return "write"
+    except (ValueError, TypeError, SessionError):
+        pass
+    return "conflict"
 
 
 def classify_session(switcher: CodexAccountSwitcher, number: str) -> ReconcileResult:
@@ -580,9 +618,10 @@ _BOOTSTRAP_FILES = ("auth.json", ".ccswap-session.json")
 
 def _new_manifest(home: Path, source: Path, number: str, auth: dict[str, Any]) -> dict[str, Any]:
     identity, _ = extract_identity(auth)
+    fingerprint = auth_fingerprint(auth)
     return validate_record(dict(
         schemaVersion=1, accountNumber=number, identity=identity,
-        home=str(home), sourceHome=str(source), baselineFingerprint=auth_fingerprint(auth),
+        home=str(home), sourceHome=str(source), baselineFingerprint=fingerprint, lineage=[fingerprint],
         bootstrapState="preparing", sharedItems={},
     ), "manifest")
 
@@ -606,6 +645,7 @@ def _resume_stage(stage: Path, manifest: dict[str, Any]) -> None:
         previous[field] == manifest[field]
         for field in ("accountNumber", "identity", "home", "sourceHome")
     ))
+    manifest["lineage"] = with_baseline(previous, manifest["baselineFingerprint"])["lineage"]
     leftovers = []
     for entry in entries:
         _owned(entry)

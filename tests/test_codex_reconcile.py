@@ -71,6 +71,9 @@ def test_d6(custody, h, s, state):
         assert stored == current == variants[h if h else s]
         assert cs.load_record(home / ".ccswap-session.json", "manifest")[
             "baselineFingerprint"] == cs.auth_fingerprint(current)
+        lineage = cs.load_record(home / ".ccswap-session.json", "manifest")["lineage"]
+        seed = cs.auth_fingerprint(baseline)
+        assert lineage == ([seed] if h == s == 0 else [seed, cs.auth_fingerprint(current)])
         assert ("1" in switcher._usage_cache) == (h == s == 0)
         assert "2" in switcher._usage_cache
 
@@ -186,7 +189,7 @@ def test_clock_not_authority(custody):
     baseline["last_refresh"] = "2026-10-25T12:00:00Z"
     write(switcher._credential_path("1"), baseline)
     manifest = cs.load_record(home / ".ccswap-session.json", "manifest")
-    manifest["baselineFingerprint"] = cs.auth_fingerprint(baseline)
+    manifest = cs.with_baseline(manifest, cs.auth_fingerprint(baseline))
     write(home / ".ccswap-session.json", manifest)
     changed = dict(baseline, last_refresh="2020-01-01T00:00:00Z")
     write(home / "auth.json", changed)

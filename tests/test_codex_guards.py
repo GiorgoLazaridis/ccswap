@@ -86,16 +86,20 @@ def test_same_account_guard(slots, monkeypatch, state):
         switcher.switch_to("1", json_output=True)
 
 
-@pytest.mark.parametrize("d,h,s,expected", [
-    (0, 0, 0, 0), (1, 0, 0, 1), (0, 1, 0, 1), (0, 0, 1, 1), (0, 1, 1, 1),
-    (1, 1, 0, 1), (1, 0, 1, 1), (1, 1, 1, 1), (0, 1, 2, None), (2, 1, 0, None),
-    (2, 0, 1, None),
+@pytest.mark.parametrize("b,d,h,s,expected", [
+    (0, 0, 0, 0, 0), (0, 1, 0, 0, 1), (0, 0, 1, 0, 1),
+    (0, 0, 0, 1, 1), (0, 0, 1, 1, 1), (0, 1, 1, 0, 1),
+    (0, 1, 0, 1, 1), (0, 1, 1, 1, 1), (0, 0, 1, 2, None),
+    (0, 2, 1, 0, None), (0, 2, 0, 1, None),
+    (2, 0, 2, 2, 2), (2, 1, 2, 2, None),
 ])
-def test_a9(slots, d, h, s, expected):
+def test_a9(slots, b, d, h, s, expected):
     switcher, credentials = slots
-    home = home_for(slots)
-    variants = [credentials[0], dict(credentials[0], rotation=1),
-                dict(credentials[0], rotation=2)]
+    variants = [dict(credentials[0], rotation=n, last_refresh=f"2026-10-25T12:0{n}:00Z")
+                for n in range(3)]
+    home = cs.bootstrap_home(switcher.backup_dir, switcher.codex_home, "1", variants[0])
+    manifest = cs.load_record(home / ".ccswap-session.json", "manifest")
+    write(home / ".ccswap-session.json", cs.with_baseline(manifest, cs.auth_fingerprint(variants[b])))
     write(switcher.auth_file, variants[d])
     write(home / "auth.json", variants[h])
     write(switcher._credential_path("1"), variants[s])
@@ -104,12 +108,13 @@ def test_a9(slots, d, h, s, expected):
         assert switcher.switch_to("2", json_output=True)["switched"]
         assert switcher._read_account_auth("1") == variants[expected]
         # A default-only generation reaches H at the next reconcile, not during switch.
-        session = h if (d, h, s) == (1, 0, 0) else expected
+        session = h if (b, d, h, s) == (0, 1, 0, 0) else expected
         assert cs.load_document(home / "auth.json") == variants[session]
     else:
         with pytest.raises(SwitchError, match="conflict"):
             switcher.switch_to("2", json_output=True)
         assert snapshot(switcher) == before
+
 
 
 def test_incoming_uses_adopted_generation(slots):
@@ -497,11 +502,11 @@ def test_default_malformed_refused(slots, content):
 @pytest.mark.parametrize("session", [False, True])
 def test_alias_backups_use_session_writer_and_clear_cache(slots, monkeypatch, session):
     switcher, credentials = slots
-    baseline = credentials[0]
+    baseline = dict(credentials[0], last_refresh="2026-10-25T12:00:00Z")
     write(switcher._credential_path("2"), baseline)
     if session:
         cs.bootstrap_home(switcher.backup_dir, switcher.codex_home, "2", baseline)
-    write(switcher.auth_file, dict(baseline, rotation=1))
+    write(switcher.auth_file, dict(baseline, rotation=1, last_refresh="2026-10-25T12:01:00Z"))
     switcher._usage_cache.update({"1": object(), "2": object()})
     writes = []
     original = switcher._write_session_backup
@@ -568,7 +573,7 @@ def test_guard_document_change_not_python_numeric_equality(slots, monkeypatch, f
     if field == "home":
         write(switcher._credential_path("2"), original)
         manifest = cs.load_record(home / ".ccswap-session.json", "manifest")
-        write(home / ".ccswap-session.json", dict(manifest, baselineFingerprint=cs.auth_fingerprint(original)))
+        write(home / ".ccswap-session.json", cs.with_baseline(manifest, cs.auth_fingerprint(original)))
     real = switcher._guard_session_slot
 
     def guard(number):
@@ -597,3 +602,86 @@ def test_guard_malformed_change_is_retry(slots, monkeypatch, field):
     monkeypatch.setattr(switcher, "_guard_session_slot", guard)
     with pytest.raises(SwitchError, match="Codex state changed during switch; retry"):
         switcher.switch_to("2", json_output=True)
+
+
+def test_adopted_lineage_preserves_rotation_against_old_default(slots):
+    switcher, credentials = slots
+    home = home_for(slots)
+    seed = cs.auth_fingerprint(credentials[0])
+    rotated = dict(credentials[0], rotation=2)
+    write(home / "auth.json", rotated)
+    with FileLock(switcher.lock_file):
+        assert cs.reconcile_session(switcher, "1", quiescent=True).state == "adopted_session"
+    assert switcher.switch_to("2", json_output=True)["switched"]
+    assert switcher._read_account_auth("1") == cs.load_document(home / "auth.json") == rotated
+    assert cs.load_record(home / ".ccswap-session.json", "manifest")["lineage"] == [
+        seed, cs.auth_fingerprint(rotated)]
+
+
+@pytest.mark.parametrize("timestamp", [None, "garbled", "2026-10-25T11:59:00Z",
+                                       "2026-10-25T12:00:00Z", "2026-10-25T12:01:00",
+                                       "2026-02-30T12:01:00Z"])
+def test_unknown_default_requires_strictly_newer_refresh(slots, timestamp):
+    switcher, credentials = slots
+    baseline = dict(credentials[0], last_refresh="2026-10-25T12:00:00Z")
+    home = cs.bootstrap_home(switcher.backup_dir, switcher.codex_home, "1", baseline)
+    write(switcher._credential_path("1"), baseline)
+    unknown = dict(credentials[0], rotation="unknown")
+    if timestamp is not None:
+        unknown["last_refresh"] = timestamp
+    write(switcher.auth_file, unknown)
+    before = snapshot(switcher)
+    with pytest.raises(SwitchError, match="conflict|verified session identity"):
+        switcher.switch_to("2", json_output=True)
+    assert snapshot(switcher) == before
+    assert cs.load_document(home / "auth.json") == baseline
+
+
+def test_default_newer_written_only_to_backup(slots):
+    switcher, credentials = slots
+    baseline = dict(credentials[0], last_refresh="2026-10-25T12:00:00Z")
+    home = cs.bootstrap_home(switcher.backup_dir, switcher.codex_home, "1", baseline)
+    write(switcher._credential_path("1"), baseline)
+    newer = dict(baseline, last_refresh="2026-10-25T14:01:00+02:00")
+    write(switcher.auth_file, newer)
+    assert switcher.switch_to("2", json_output=True)["switched"]
+    assert switcher._read_account_auth("1") == newer
+    assert cs.load_document(home / "auth.json") == baseline
+    with FileLock(switcher.lock_file):
+        assert cs.reconcile_session(switcher, "1", quiescent=True).state == "reseeded_session"
+    assert cs.load_record(home / ".ccswap-session.json", "manifest")["lineage"] == [
+        cs.auth_fingerprint(baseline), cs.auth_fingerprint(newer)]
+
+
+@pytest.mark.parametrize("read_number", [3, 4])
+def test_default_rotation_before_outgoing_backup_retried_without_writes(slots, monkeypatch, read_number):
+    switcher, credentials = slots
+    baseline = dict(credentials[0], last_refresh="2026-10-25T12:00:00Z")
+    cs.bootstrap_home(switcher.backup_dir, switcher.codex_home, "1", baseline)
+    write(switcher._credential_path("1"), baseline)
+    write(switcher.auth_file, dict(baseline, last_refresh="2026-10-25T12:01:00Z"))
+    before = snapshot(switcher)
+    original = switcher._read_switch_auth
+    reads = 0
+
+    def rotated(**kwargs):
+        nonlocal reads
+        reads += 1
+        if reads == read_number:
+            write(switcher.auth_file, dict(baseline, last_refresh="2026-10-25T12:02:00Z"))
+        return original(**kwargs)
+
+    monkeypatch.setattr(switcher, "_read_switch_auth", rotated)
+    # Reads: initial snapshot, after guards, immediately before backup, before activation.
+    if read_number == 3:
+        with pytest.raises(SwitchError, match="Codex state changed during switch; retry"):
+            switcher.switch_to("2", json_output=True)
+        after = snapshot(switcher)
+        before.pop(switcher.auth_file)
+        after.pop(switcher.auth_file)
+        assert after == before
+    else:
+        # Rotation after a durable backup is retained in D and never rolled back.
+        with pytest.raises(SwitchError, match="Codex state changed during switch; retry"):
+            switcher.switch_to("2", json_output=True)
+        assert cs.load_document(switcher.auth_file)["last_refresh"] == "2026-10-25T12:02:00Z"

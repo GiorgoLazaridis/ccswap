@@ -45,7 +45,7 @@ def record(kind, tmp_path):
     if kind == "manifest":
         data.update(
             sourceHome=str(tmp_path / "default"),
-            baselineFingerprint="a" * 64,
+            baselineFingerprint="a" * 64, lineage=["a" * 64],
             bootstrapState="ready",
             sharedItems={},
         )
@@ -1683,3 +1683,84 @@ def test_sharing_orphan_old_retained_until_success(sharing, windows_copy, monkey
         assert not (home / "rules").exists()
     else:
         assert (home / "rules" / "item").read_text() == "new"
+
+
+@pytest.mark.parametrize("lineage", [None, [], "a" * 64, [True], ["A" * 64],
+                                    ["b" * 64], ["a" * 64] * 65])
+def test_manifest_lineage_validation(tmp_path, lineage):
+    manifest = record("manifest", tmp_path)
+    manifest["lineage"] = lineage
+    with pytest.raises(SessionError):
+        codex_session.validate_record(manifest, "manifest")
+
+
+def test_manifest_lineage_required(tmp_path):
+    manifest = record("manifest", tmp_path)
+    del manifest["lineage"]
+    with pytest.raises(SessionError):
+        codex_session.validate_record(manifest, "manifest")
+
+
+def test_baseline_lineage_bounded_and_idempotent(tmp_path):
+    manifest = record("manifest", tmp_path)
+    seed = manifest["baselineFingerprint"]
+    entries = [f"{n:064x}" for n in range(70)]
+    for fingerprint in entries:
+        previous = manifest
+        manifest = codex_session.with_baseline(manifest, fingerprint)
+        assert previous["lineage"][-1] == previous["baselineFingerprint"]
+        codex_session.validate_record(manifest, "manifest")
+    assert manifest["lineage"] == entries[-64:] and seed not in manifest["lineage"]
+    assert codex_session.with_baseline(manifest, entries[-1]) == manifest
+
+
+@pytest.mark.parametrize("timestamp", [None, "bad", "2026-10-25T12:00:00", "2026-02-30T12:00:00Z"])
+@pytest.mark.parametrize("side", ["default", "stored"])
+def test_default_write_decision_missing_or_invalid_timestamp(tmp_path, timestamp, side):
+    d = dict(auth(), rotation=1, last_refresh="2026-10-25T12:01:00Z")
+    s = dict(auth(), last_refresh="2026-10-25T12:00:00Z")
+    target = d if side == "default" else s
+    if timestamp is None:
+        del target["last_refresh"]
+    else:
+        target["last_refresh"] = timestamp
+    manifest = codex_session._new_manifest(tmp_path / "home", tmp_path / "default", "1", auth())
+    manifest = codex_session.with_baseline(manifest, codex_session.auth_fingerprint(s))
+    assert codex_session.default_write_decision(d, s, s, manifest) == "conflict"
+
+
+def test_default_write_decision_is_pure_and_checks_history_before_time(tmp_path):
+    seed = dict(auth(), last_refresh="2026-10-25T12:02:00Z")
+    current = dict(auth(), rotation=2, last_refresh="2026-10-25T12:00:00Z")
+    manifest = codex_session._new_manifest(tmp_path / "home", tmp_path / "default", "1", seed)
+    manifest = codex_session.with_baseline(manifest, codex_session.auth_fingerprint(current))
+    before = copy.deepcopy((seed, current, manifest))
+    assert codex_session.default_write_decision(seed, current, current, manifest) == "skip"
+    assert (seed, current, manifest) == before
+
+
+def test_resumed_bootstrap_preserves_previous_seed_lineage(bootstrap, monkeypatch):
+    root, source, home, stage = bootstrap
+    publish = codex_session._publish_home
+
+    def interrupted(*args):
+        raise OSError()
+
+    monkeypatch.setattr(codex_session, "_publish_home", interrupted)
+    seed = auth()
+    with pytest.raises(SessionError):
+        codex_session.bootstrap_home(root, source, "1", seed)
+    rotated = dict(seed, rotation=2)
+    monkeypatch.setattr(codex_session, "_publish_home", publish)
+    codex_session.bootstrap_home(root, source, "1", rotated)
+    manifest = codex_session.load_record(home / ".ccswap-session.json", "manifest")
+    assert manifest["lineage"] == list(map(codex_session.auth_fingerprint, (seed, rotated)))
+
+
+def test_evicted_ancestor_without_timestamp_is_conflict(tmp_path):
+    seed = auth()
+    manifest = codex_session._new_manifest(tmp_path / "home", tmp_path / "default", "1", seed)
+    for number in range(65):
+        current = dict(seed, rotation=number)
+        manifest = codex_session.with_baseline(manifest, codex_session.auth_fingerprint(current))
+    assert codex_session.default_write_decision(seed, current, current, manifest) == "conflict"
