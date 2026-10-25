@@ -257,7 +257,13 @@ def test_custody_fail_closed(slots, monkeypatch, kind):
 
         monkeypatch.setattr(cs.Path, "lstat", denied)
     outcome = observed(switcher)
-    assert outcome.state == ("uncertain" if kind == "unsupported" else "conflict")
+    if kind == "stale":
+        assert outcome.state == "quiescent" and outcome.intent
+        with FileLock(switcher.lock_file):
+            with pytest.raises(SwitchError, match="conflict"):
+                switcher._guard_session_slot("1")
+    else:
+        assert outcome.state == ("uncertain" if kind == "unsupported" else "conflict")
     assert "secret" not in repr(outcome)
 
 

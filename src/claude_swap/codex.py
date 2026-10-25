@@ -364,6 +364,8 @@ class CodexAccountSwitcher:
         plan_type = _plan_type_from_auth(live_auth)
         with FileLock(self.lock_file):
             self._setup_directories()
+            if self._read_live_auth() != live_auth:
+                raise SwitchError("Codex login changed; retry")
             data = self._read_sequence()
             # Only the very same login may claim an occupied slot. A different
             # seat in this workspace, or this email in a different workspace, is
@@ -375,12 +377,42 @@ class CodexAccountSwitcher:
             if not number.isdigit() or int(number) < 1:
                 raise ValidationError("Codex account slot must be a positive integer")
             occupant = data["accounts"].get(number)
-            if occupant and number != existing and not assume_yes:
-                answer = input(f"Overwrite Codex account slot {number}? [y/N] ").strip().lower()
-                if answer not in ("y", "yes"):
-                    print("Cancelled")
+            from claude_swap.codex_session import (
+                _ordinary, _sharing_exists, auth_fingerprint, extract_identity, load_record,
+                replace_session_credentials, slot_home,
+            )
+
+            for guarded in dict.fromkeys([n for n in (existing, number) if n in data["accounts"]]):
+                self._guard_session_slot(guarded)
+            home = slot_home(self, number) if occupant else None
+            sessions = self.backup_dir / "codex" / "sessions"
+            retained = ([path for path in sessions.iterdir() if path.name.startswith(f"{number}-")]
+                        if _ordinary(sessions, directory=True) else [])
+            if retained and (home is None or any(path != home for path in retained)):
+                raise SwitchError(f"Codex session home kept at {retained[0]}; manual disposition required")
+            if home is not None and _sharing_exists(home):
+                manifest = load_record(home / ".ccswap-session.json", "manifest")
+                identity, _ = extract_identity(live_auth)
+                if any(identity[key] != manifest["identity"][key]
+                       for key in ("userId", "workspaceId", "email")):
+                    raise SwitchError(f"Codex session home kept at {home}; manual disposition required")
+                stored = self._read_session_backup(number)
+                if (auth_fingerprint(live_auth) == auth_fingerprint(stored)
+                        or auth_fingerprint(live_auth) in manifest["lineage"]):
+                    print("The saved Codex login is already current")
                     return
-            self._write_json(self._credential_path(number), live_auth)
+                if self._read_live_auth() != live_auth:
+                    raise SwitchError("Codex login changed; retry")
+                replace_session_credentials(self, number, live_auth, "replacement")
+            else:
+                if occupant and number != existing and not assume_yes:
+                    answer = input(f"Overwrite Codex account slot {number}? [y/N] ").strip().lower()
+                    if answer not in ("y", "yes"):
+                        print("Cancelled")
+                        return
+                if self._read_live_auth() != live_auth:
+                    raise SwitchError("Codex login changed; retry")
+                self._write_json(self._credential_path(number), live_auth)
             data["accounts"][number] = {
                 "email": email,
                 "accountId": account_id,
@@ -397,6 +429,8 @@ class CodexAccountSwitcher:
             data = self._read_sequence()
             number = self._resolve(identifier, data)
             account = data["accounts"][number]
+            self._guard_session_slot(number)
+            before = self._switch_slot_snapshot(number)
             if not assume_yes:
                 answer = input(
                     f"Permanently remove Codex Account {number} ({account['email']})? [y/N] "
@@ -404,18 +438,37 @@ class CodexAccountSwitcher:
                 if answer not in ("y", "yes"):
                     print("Cancelled")
                     return
+            from claude_swap.codex_session import slot_custody, slot_home
+
+            custody = slot_custody(self, number)
+            if custody.state not in ("none", "quiescent") or custody.intent:
+                raise SwitchError("Codex session custody changed during removal; retry")
+            if self._switch_slot_snapshot(number) != before or self._read_sequence() != data:
+                raise SwitchError("Codex session state changed during removal; retry")
+            self._guard_session_slot(number)
+            home = slot_home(self, number) if before[0] is not None else None
             self._credential_path(number).unlink(missing_ok=True)
             del data["accounts"][number]
             if data.get("activeAccountNumber") == int(number):
                 data["activeAccountNumber"] = None
             self._write_sequence(data)
         print(f"Removed Codex Account {number} ({account['email']})")
+        if home is not None:
+            print(f"Session home kept at {home}")
 
     def _guard_session_slot(self, number: str) -> Custody | ReconcileResult:
         """Require custody and reconcile; caller must hold R/.lock."""
-        from claude_swap.codex_session import reconcile_session, slot_custody
+        from claude_swap.codex_session import (
+            reconcile_session, recover_session_credentials, slot_custody,
+        )
+        from claude_swap.exceptions import SessionError
 
         custody = slot_custody(self, number)
+        if custody.state == "quiescent" and custody.intent:
+            try:
+                recover_session_credentials(self, number)
+            except (OSError, ValueError, TypeError, SessionError):
+                raise SwitchError(f"Codex Account {number} session conflict; files retained") from None
         outcome = (reconcile_session(self, number, quiescent=True)
                    if custody.state == "quiescent" else custody)
         if outcome.state in ("live", "uncertain", "conflict"):

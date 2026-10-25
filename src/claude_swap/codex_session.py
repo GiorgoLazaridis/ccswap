@@ -303,6 +303,7 @@ class Custody:
     pids: tuple[int, ...] = ()
     invalid_records: int = 0
     issue_count: int = 0
+    intent: bool = False
 
 
 def slot_home(switcher: CodexAccountSwitcher, number: str) -> Path:
@@ -333,10 +334,12 @@ def slot_custody(switcher: CodexAccountSwitcher, number: str) -> Custody:
             parent = parent / part
             if not _ordinary(parent, directory=True):
                 return Custody("none", "no_session_home")
-        if _sharing_exists(home.parent / f".{home.name}.stale.json"):
-            return Custody("conflict", "stale_intent")
+        if any(path != home and path.name.startswith(f"{number}-")
+               for path in home.parent.iterdir()):
+            return Custody("conflict", "retained_home")
+        intent = _sharing_exists(home.parent / f".{home.name}.stale.json")
         if not _ordinary(home, directory=True):
-            return Custody("none", "no_session_home")
+            return Custody("conflict", "missing_home") if intent else Custody("none", "no_session_home")
         _checked_parents(home, switcher.backup_dir)
         _owned(home)
         manifest = load_record(home / ".ccswap-session.json", "manifest")
@@ -366,9 +369,9 @@ def slot_custody(switcher: CodexAccountSwitcher, number: str) -> Custody:
         scan = process_detection.scan_codex_home(home, supervisors, invalid)
         return Custody(scan["state"], "writers_present" if scan["state"] == "live" else (
             "incomplete_scan" if scan["state"] == "uncertain" else "no_writers"),
-            tuple(scan["pids"]), invalid, len(scan["issues"]))
+            tuple(scan["pids"]), invalid, len(scan["issues"]), intent)
     if sys.platform != "win32":
-        return Custody("uncertain", "unsupported_platform", invalid_records=invalid)
+        return Custody("uncertain", "unsupported_platform", invalid_records=invalid, intent=intent)
     pids, issues = set(), invalid
     deadline = time.monotonic() + 10
     for record in records:
@@ -393,7 +396,7 @@ def slot_custody(switcher: CodexAccountSwitcher, number: str) -> Custody:
                 issues += 1
     state = "live" if pids else "uncertain" if issues else "quiescent"
     return Custody(state, {"live": "writers_present", "uncertain": "incomplete_scan",
-                          "quiescent": "no_writers"}[state], tuple(sorted(pids)), invalid, issues)
+                          "quiescent": "no_writers"}[state], tuple(sorted(pids)), invalid, issues, intent)
 
 
 @dataclass(frozen=True)
@@ -505,6 +508,86 @@ def reconcile_session(
         return ReconcileResult("conflict", reason)
 
 
+def _clear_intent(path: Path) -> None:
+    path.unlink()
+    _sync_directory(path.parent)
+
+
+def recover_session_credentials(switcher: CodexAccountSwitcher, number: str) -> None:
+    """Finish an intent under caller-held lock after proven quiescence."""
+    home = slot_home(switcher, number)
+    path = home.parent / f".{home.name}.stale.json"
+    intent = load_record(path, "stale")
+    manifest = load_record(home / ".ccswap-session.json", "manifest")
+    stored = switcher._read_session_backup(number)
+    _require(intent is not None and manifest is not None and stored is not None)
+    identity, _ = extract_identity(stored)
+    accepted = intent["identity"]
+    _require(intent["home"] == str(home) and intent["accountNumber"] == number)
+    _require(all(accepted[key] == manifest["identity"][key]
+                 for key in ("userId", "workspaceId", "email")))
+    _require(intent["reason"] == "replacement"
+             or same_identity(accepted, manifest["identity"]))
+    _require(manifest["baselineFingerprint"] in (intent["oldFingerprint"], intent["newFingerprint"]))
+    fingerprint = auth_fingerprint(stored)
+    _require(fingerprint in (intent["oldFingerprint"], intent["newFingerprint"]))
+    if fingerprint == intent["oldFingerprint"]:
+        _require(same_identity(identity, manifest["identity"])
+                 and identity["email"] == manifest["identity"]["email"])
+        current = load_document(home / "auth.json")
+        _require(current is not None)
+        current_identity, _ = extract_identity(current)
+        _require(same_identity(current_identity, manifest["identity"])
+                 and current_identity["email"] == accepted["email"])
+    else:
+        _require(identity == accepted)
+        current = load_document(home / "auth.json")
+        if current is not None:
+            current_identity, _ = extract_identity(current)
+            _require(current_identity["email"] == accepted["email"] and (
+                same_identity(current_identity, manifest["identity"])
+                or same_identity(current_identity, accepted)))
+        _sync_directory(switcher.credentials_dir)
+        _session_write(switcher.backup_dir, home / "auth.json", stored)
+        _sync_directory(home)
+        updated = dict(with_baseline(manifest, fingerprint), identity=accepted)
+        _session_write(switcher.backup_dir, home / ".ccswap-session.json", updated)
+        _sync_directory(home)
+        switcher._usage_cache.pop(number, None)
+    _clear_intent(path)
+
+
+def replace_session_credentials(
+    switcher: CodexAccountSwitcher, number: str, new_auth: dict[str, Any], reason: str,
+) -> None:
+    """Replace credentials under caller-held lock, quiescent guard and D6."""
+    identity, _ = extract_identity(new_auth)
+    _require(reason in ("replacement", "refresh"))
+    stored = switcher._read_session_backup(number)
+    stored_identity, _ = extract_identity(stored)
+    _require(all(identity[key] == stored_identity[key] for key in ("userId", "workspaceId")))
+    home = slot_home(switcher, number)
+    if not _ordinary(home, directory=True):
+        switcher._write_session_backup(number, new_auth)
+        _sync_directory(switcher.credentials_dir)
+        return
+    manifest = load_record(home / ".ccswap-session.json", "manifest")
+    _require(manifest is not None and stored is not None)
+    _require(all(identity[key] == manifest["identity"][key]
+                 for key in ("userId", "workspaceId", "email")))
+    _require(reason == "replacement" or same_identity(identity, manifest["identity"]))
+    intent = home.parent / f".{home.name}.stale.json"
+    _require(not _sharing_exists(intent))
+    data = dict(schemaVersion=1, home=str(home), accountNumber=number, identity=identity,
+                oldFingerprint=auth_fingerprint(stored), newFingerprint=auth_fingerprint(new_auth),
+                reason=reason)
+    _session_write(switcher.backup_dir, intent, validate_record(data, "stale"))
+    _sync_directory(home.parent)
+    switcher._write_session_backup(number, new_auth)
+    _sync_directory(switcher.credentials_dir)
+    recover_session_credentials(switcher, number)
+
+
 def with_baseline(manifest: dict[str, Any], fingerprint: str) -> dict[str, Any]:
     """Advance the baseline and bounded lineage together, without mutating input."""
     lineage = manifest["lineage"]
@@ -527,7 +610,10 @@ def _refresh_timestamp(value: object) -> datetime:
 def default_write_decision(
     d_auth: dict[str, Any], h_auth: dict[str, Any], s_auth: dict[str, Any], manifest: dict[str, Any],
 ) -> str:
-    """Classify D -> S under A10; never infer generation order from fingerprints."""
+    """Classify D -> S under A10; never infer order from fingerprints.
+
+    An ancestor evicted after 64 baselines is reported as conflict (safe).
+    """
     try:
         validate_record(manifest, "manifest")
         d, h, s = map(auth_fingerprint, (d_auth, h_auth, s_auth))
