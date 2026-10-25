@@ -543,6 +543,8 @@ def recover_session_credentials(switcher: CodexAccountSwitcher, number: str) -> 
         _require(identity == accepted)
         current = load_document(home / "auth.json")
         if current is not None:
+            _require(auth_fingerprint(current) in (
+                intent["oldFingerprint"], intent["newFingerprint"], manifest["baselineFingerprint"]))
             current_identity, _ = extract_identity(current)
             _require(current_identity["email"] == accepted["email"] and (
                 same_identity(current_identity, manifest["identity"])
@@ -576,6 +578,9 @@ def replace_session_credentials(
     _require(all(identity[key] == manifest["identity"][key]
                  for key in ("userId", "workspaceId", "email")))
     _require(reason == "replacement" or same_identity(identity, manifest["identity"]))
+    current = load_document(home / "auth.json")
+    _require(current is not None and auth_fingerprint(current) == auth_fingerprint(stored)
+             == manifest["baselineFingerprint"])
     intent = home.parent / f".{home.name}.stale.json"
     _require(not _sharing_exists(intent))
     data = dict(schemaVersion=1, home=str(home), accountNumber=number, identity=identity,

@@ -40,6 +40,7 @@ def slots(tmp_path, monkeypatch):
         n: {"email": " User@EXAMPLE.org ", "accountId": "workspace"} for n in ("1", "2", "3")
     }})
     write(switcher.auth_file, credentials[0])
+    monkeypatch.setattr(cs, "sys", SimpleNamespace(platform="linux"))
     # No actual process scan is needed for switch tests; its adapter is tested below.
     monkeypatch.setattr(pd, "scan_codex_home", lambda *a: {
         "state": "quiescent", "pids": [], "issues": [],

@@ -53,6 +53,7 @@ class SysctlCall:
 
 @pytest.fixture
 def mac(monkeypatch):
+    monkeypatch.setattr(os, "getuid", lambda: 1000, raising=False)
     monkeypatch.setattr(detection.sys, "platform", "darwin")
     monkeypatch.setattr(detection.platform, "machine", lambda: "x86_64")
     abi = detection._codex_macos_abi("x86_64")

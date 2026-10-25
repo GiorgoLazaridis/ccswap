@@ -297,8 +297,16 @@ class CodexAccountSwitcher:
         self._usage_cache.pop(number, None)
 
     def _next_number(self, data: dict[str, Any]) -> str:
+        from claude_swap.codex_session import _ordinary
+
         numbers = [int(number) for number in data["accounts"] if number.isdigit()]
-        return str(max(numbers, default=0) + 1)
+        sessions = self.backup_dir / "codex" / "sessions"
+        retained = [path.name.split("-", 1)[0] for path in sessions.iterdir()] if (
+            _ordinary(sessions, directory=True)) else []
+        number = max(numbers, default=0) + 1
+        while str(number) in retained:
+            number += 1
+        return str(number)
 
     def _resolve(self, identifier: str, data: dict[str, Any]) -> str:
         if identifier.isdigit() and identifier in data["accounts"]:
@@ -378,8 +386,8 @@ class CodexAccountSwitcher:
                 raise ValidationError("Codex account slot must be a positive integer")
             occupant = data["accounts"].get(number)
             from claude_swap.codex_session import (
-                _ordinary, _sharing_exists, auth_fingerprint, extract_identity, load_record,
-                replace_session_credentials, slot_home,
+                _ordinary, _sharing_exists, default_write_decision, extract_identity,
+                load_document, load_record, replace_session_credentials, slot_home,
             )
 
             for guarded in dict.fromkeys([n for n in (existing, number) if n in data["accounts"]]):
@@ -392,13 +400,26 @@ class CodexAccountSwitcher:
                 raise SwitchError(f"Codex session home kept at {retained[0]}; manual disposition required")
             if home is not None and _sharing_exists(home):
                 manifest = load_record(home / ".ccswap-session.json", "manifest")
-                identity, _ = extract_identity(live_auth)
+                from claude_swap.exceptions import SessionError
+
+                try:
+                    identity, _ = extract_identity(live_auth)
+                except SessionError:
+                    raise SwitchError("Codex session generation conflict; files retained") from None
                 if any(identity[key] != manifest["identity"][key]
                        for key in ("userId", "workspaceId", "email")):
                     raise SwitchError(f"Codex session home kept at {home}; manual disposition required")
                 stored = self._read_session_backup(number)
-                if (auth_fingerprint(live_auth) == auth_fingerprint(stored)
-                        or auth_fingerprint(live_auth) in manifest["lineage"]):
+                if occupant and number != existing and not assume_yes:
+                    answer = input(f"Overwrite Codex account slot {number}? [y/N] ").strip().lower()
+                    if answer not in ("y", "yes"):
+                        print("Cancelled")
+                        return
+                decision = default_write_decision(
+                    live_auth, load_document(home / "auth.json"), stored, manifest)
+                if decision == "conflict":
+                    raise SwitchError("Codex session generation conflict; files retained")
+                if decision == "skip":
                     print("The saved Codex login is already current")
                     return
                 if self._read_live_auth() != live_auth:
@@ -447,11 +468,11 @@ class CodexAccountSwitcher:
                 raise SwitchError("Codex session state changed during removal; retry")
             self._guard_session_slot(number)
             home = slot_home(self, number) if before[0] is not None else None
-            self._credential_path(number).unlink(missing_ok=True)
             del data["accounts"][number]
             if data.get("activeAccountNumber") == int(number):
                 data["activeAccountNumber"] = None
             self._write_sequence(data)
+            self._credential_path(number).unlink(missing_ok=True)
         print(f"Removed Codex Account {number} ({account['email']})")
         if home is not None:
             print(f"Session home kept at {home}")
@@ -1011,32 +1032,46 @@ class CodexAccountSwitcher:
         if not isinstance(expected_refresh, str) or not expected_refresh:
             raise CodexUsageError("saved login has no ChatGPT refresh token")
 
+        from claude_swap.codex_session import (
+            auth_fingerprint, default_write_decision, extract_identity,
+            replace_session_credentials, same_identity,
+        )
+        from claude_swap.exceptions import SessionError
+
         with FileLock(self.lock_file):
             data = self._read_sequence()
-            live_auth = self._read_json(self.auth_file)
-            if (
-                live_auth is not None
-                and self._current_account_for_auth(live_auth, data) == number
-            ):
+            if number not in data["accounts"]:
                 return None
-            live_tokens = live_auth.get("tokens") if live_auth is not None else None
-            if (
-                isinstance(live_tokens, dict)
-                and live_tokens.get("refresh_token") == expected_refresh
-            ):
-                return None
-            stored_auth = self._read_account_auth(number)
-            stored_tokens = stored_auth.get("tokens") if stored_auth else None
-            stored_refresh = (
-                stored_tokens.get("refresh_token")
-                if isinstance(stored_tokens, dict)
-                else None
-            )
-            # Another process updated this backup while we were fetching the
-            # initial usage value. It owns the newer rotation; don't consume
-            # the stale token passed to this method.
-            if stored_refresh != expected_refresh:
+            try:
+                self._guard_session_slot(number)
+                h_auth, stored_auth, manifest = self._switch_slot_snapshot(number)
+                # A reconciled rotation belongs to the newer caller, even if its
+                # refresh token happens to be unchanged.
+                if (stored_auth is None
+                        or auth_fingerprint(stored_auth) != auth_fingerprint(expected_auth)):
+                    return None
+                live_auth = self._read_switch_auth()
+                if live_auth is not None:
+                    if self._current_account_for_auth(live_auth, data) == number:
+                        return None
+                    if manifest is not None:
+                        live_identity, _ = extract_identity(live_auth)
+                        stored_identity, _ = extract_identity(stored_auth)
+                        if same_identity(live_identity, stored_identity):
+                            return None
+                        decision = default_write_decision(live_auth, h_auth, stored_auth, manifest)
+                        if decision == "skip":
+                            return None
+                    live_tokens = live_auth.get("tokens")
+                    if (isinstance(live_tokens, dict)
+                            and live_tokens.get("refresh_token") == expected_refresh):
+                        return None
+            except (SwitchError, ConfigError, SessionError):
                 return None
             refreshed_auth = refresh_codex_auth(stored_auth)
-            self._write_json(self._credential_path(number), refreshed_auth)
+            if manifest is not None:
+                replace_session_credentials(self, number, refreshed_auth, "refresh")
+            else:
+                self._write_json(self._credential_path(number), refreshed_auth)
+                self._usage_cache.pop(number, None)
             return refreshed_auth

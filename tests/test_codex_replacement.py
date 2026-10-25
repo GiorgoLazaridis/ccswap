@@ -10,7 +10,7 @@ from tests.test_codex_session import auth
 
 
 def replacement(slots):
-    return dict(slots[1][0], rotation="fresh")
+    return dict(slots[1][0], rotation="fresh", last_refresh="2026-10-25T12:01:00Z")
 
 
 def intent_for(slots, home, new):
@@ -138,7 +138,9 @@ def test_add_ancestor_does_not_lose_rotation(slots, capsys):
 
 @pytest.mark.parametrize("owner", [None, "new-owner"])
 def test_add_replaces_same_user_login(slots, owner):
-    switcher, _ = slots
+    switcher, credentials = slots
+    credentials[0]["last_refresh"] = "2026-10-25T12:00:00Z"
+    write(switcher._credential_path("1"), credentials[0])
     home = home_for(slots)
     new = replacement(slots)
     if owner:
@@ -254,7 +256,9 @@ def test_replacement_rejects_invalid_identity_before_intent(slots, change):
 
 
 def test_add_checks_default_again_after_guard(slots, monkeypatch):
-    switcher, _ = slots
+    switcher, credentials = slots
+    credentials[0]["last_refresh"] = "2026-10-25T12:00:00Z"
+    write(switcher._credential_path("1"), credentials[0])
     home_for(slots)
     new = replacement(slots)
     write(switcher.auth_file, new)
@@ -347,3 +351,137 @@ def test_recovery_rejects_changed_coordination_or_identity(slots, case):
         with pytest.raises(SwitchError, match="conflict"):
             switcher._guard_session_slot("1")
     assert snapshot(switcher) == before
+
+
+@pytest.mark.parametrize("timestamp", ["2026-10-25T11:59:00Z", "2026-10-25T12:00:00Z",
+                                       None, "garbled"])
+def test_add_rejects_unknown_default_generation(slots, timestamp):
+    switcher, credentials = slots
+    credentials[0]["last_refresh"] = "2026-10-25T12:00:00Z"
+    write(switcher._credential_path("1"), credentials[0])
+    home_for(slots)
+    new = dict(credentials[0], generation="unknown")
+    if timestamp is None:
+        new.pop("last_refresh")
+    else:
+        new["last_refresh"] = timestamp
+    write(switcher.auth_file, new)
+    before = snapshot(switcher)
+    with pytest.raises(SwitchError, match="conflict"):
+        switcher.add_account(slot=1, assume_yes=True)
+    assert snapshot(switcher) == before
+
+
+def test_add_evicted_ancestor_conflicts(slots):
+    switcher, credentials = slots
+    original = dict(credentials[0], last_refresh="2026-10-25T11:00:00Z")
+    write(switcher._credential_path("1"), original)
+    home = cs.bootstrap_home(switcher.backup_dir, switcher.codex_home, "1", original)
+    for number in range(65):
+        current = dict(original, rotation=number, last_refresh="2026-10-25T12:00:00Z")
+        write(home / "auth.json", current)
+        with FileLock(switcher.lock_file):
+            switcher._guard_session_slot("1")
+    write(switcher.auth_file, original)
+    before = snapshot(switcher)
+    with pytest.raises(SwitchError, match="conflict"):
+        switcher.add_account(slot=1, assume_yes=True)
+    assert snapshot(switcher) == before
+
+
+def test_recovery_retains_foreign_rotation_after_backup_commit(slots):
+    switcher, credentials = slots
+    home = home_for(slots)
+    new = replacement(slots)
+    intent_for(slots, home, new)
+    write(switcher._credential_path("1"), new)
+    t3 = dict(credentials[0], rotation="foreign-T3")
+    write(home / "auth.json", t3)
+    before = snapshot(switcher)
+    with FileLock(switcher.lock_file):
+        with pytest.raises(SwitchError, match="conflict"):
+            switcher._guard_session_slot("1")
+    assert snapshot(switcher) == before
+    assert cs.load_document(home / "auth.json") == t3
+
+
+@pytest.mark.parametrize("moved", ["home", "backup", "baseline"])
+def test_replacement_checks_cas_itself(slots, moved):
+    from claude_swap.exceptions import SessionError
+
+    switcher, credentials = slots
+    home = home_for(slots)
+    other = dict(credentials[0], rotation="changed")
+    if moved == "home":
+        write(home / "auth.json", other)
+    elif moved == "backup":
+        write(switcher._credential_path("1"), other)
+    else:
+        manifest = cs.load_record(home / ".ccswap-session.json", "manifest")
+        write(home / ".ccswap-session.json", cs.with_baseline(manifest, cs.auth_fingerprint(other)))
+    before = snapshot(switcher)
+    with FileLock(switcher.lock_file):
+        with pytest.raises(SessionError):
+            cs.replace_session_credentials(switcher, "1", replacement(slots), "replacement")
+    assert snapshot(switcher) == before
+
+
+@pytest.mark.parametrize("yes", [False, True])
+def test_add_session_retains_overwrite_prompt(slots, monkeypatch, yes):
+    switcher, credentials = slots
+    credentials[0]["last_refresh"] = "2026-10-25T12:00:00Z"
+    write(switcher._credential_path("1"), credentials[0])
+    data = switcher._read_sequence()
+    data["accounts"]["1"]["email"] = "user@example.org"
+    write(switcher.sequence_file, data)
+    home_for(slots)
+    write(switcher.auth_file, replacement(slots))
+    prompts = []
+    monkeypatch.setattr("builtins.input", lambda prompt: prompts.append(prompt) or "no")
+    before = snapshot(switcher)
+    switcher.add_account(slot=1, assume_yes=yes)
+    assert len(prompts) == (0 if yes else 1)
+    if not yes:
+        assert snapshot(switcher) == before
+    else:
+        assert switcher._read_account_auth("1") == replacement(slots)
+
+
+@pytest.mark.parametrize("failure", ["sequence", "unlink"])
+def test_remove_crash_keeps_recoverable_store(slots, monkeypatch, failure):
+    from pathlib import Path
+
+    switcher, _ = slots
+    real = Path.unlink
+
+    def unlink(path, *args, **kwargs):
+        if path == switcher._credential_path("3"):
+            assert "3" not in switcher._read_sequence()["accounts"]
+            raise OSError("synthetic interruption")
+        return real(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        if failure == "sequence":
+            patch.setattr(switcher, "_write_sequence", lambda *a: (_ for _ in ()).throw(OSError()))
+        else:
+            patch.setattr(Path, "unlink", unlink)
+        with pytest.raises(OSError):
+            switcher.remove_account("3", assume_yes=True)
+    assert switcher._credential_path("3").exists()
+    if failure == "sequence":
+        switcher.remove_account("3", assume_yes=True)
+    else:
+        switcher.add_account(slot=3, assume_yes=True)
+        assert "3" in switcher._read_sequence()["accounts"]
+
+
+def test_automatic_number_skips_retained_highest_home(slots):
+    switcher, _ = slots
+    home = home_for(slots, "3")
+    switcher.remove_account("3", assume_yes=True)
+    new = auth(chatgpt_account_id="new-workspace")
+    new["tokens"]["account_id"] = "new-workspace"
+    write(switcher.auth_file, new)
+    switcher.add_account(assume_yes=True)
+    assert "4" in switcher._read_sequence()["accounts"]
+    assert home.exists()
