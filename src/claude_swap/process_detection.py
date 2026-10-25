@@ -649,6 +649,10 @@ def scan_codex_home(
             "pids": sorted(pids), "issues": sorted(issues), "unreadable": len(unreadable)}
 
 
+CTL_KERN, KERN_ARGMAX, KERN_PROC, KERN_PROCARGS2 = 1, 8, 14, 49
+KERN_PROC_ALL, KERN_PROC_PID, P_LP64 = 0, 1, 0x4
+
+
 class _MacTimeval(ctypes.Structure):
     _fields_ = [("tv_sec", ctypes.c_int64), ("tv_usec", ctypes.c_int32)]
 
@@ -657,7 +661,8 @@ class _MacTimeval(ctypes.Structure):
 def _codex_macos_abi(arch: str) -> type[ctypes.Structure]:
     """XNU xnu-12377.121.6 LP64 field order; no guessed offsets/packing.
 
-    bsd/sys/proc.h:extern_proc; sys/sysctl.h:_pcred/_ucred/eproc/kinfo_proc;
+    bsd/sys/proc.h:extern_proc; sys/sysctl.h:1133–1157:user64_kinfo_proc,
+    the LP64 copyout selected in kern/kern_sysctl.c:874–875 (e_jobc is int).
     sys/vm.h:vmspace; sys/time.h:itimerval; sys/_types/_timeval.h.
     sys/types.h and sys/_types.h supply integer widths; param.h/syslimits.h
     give MAXCOMLEN=16, NGROUPS=16. i386/arm/_types.h both use long time_t;
@@ -706,7 +711,7 @@ def _codex_macos_abi(arch: str) -> type[ctypes.Structure]:
 
     class Eproc(ctypes.Structure):
         _fields_ = [("e_paddr", P), ("e_sess", P), ("e_pcred", Pcred), ("e_ucred", Ucred),
-                    ("e_vm", Vmspace), ("e_ppid", I), ("e_pgid", I), ("e_jobc", H),
+                    ("e_vm", Vmspace), ("e_ppid", I), ("e_pgid", I), ("e_jobc", I),
                     ("e_tdev", I), ("e_tpgid", I), ("e_tsess", P), ("e_wmesg", C * 8),
                     ("e_xsize", I), ("e_xrssize", H), ("e_xccount", H), ("e_xswrss", H),
                     ("e_flag", I), ("e_login", C * 12), ("e_spare", I * 4)]
@@ -716,7 +721,6 @@ def _codex_macos_abi(arch: str) -> type[ctypes.Structure]:
 
     if ctypes.sizeof(P) != 8 or ctypes.sizeof(KinfoProc) != 648:
         raise ValueError("macOS ABI size mismatch")
-    assert ctypes.sizeof(KinfoProc) == 648
     return KinfoProc
 
 
@@ -735,8 +739,8 @@ def _codex_macos_sysctl(mib: tuple[int, ...] | str) -> bytes:
     size = ctypes.c_size_t()
     if call(*args, None, ctypes.byref(size), None, 0):
         raise OSError(ctypes.get_errno(), "sysctl unavailable")
-    if not isinstance(mib, str) and mib[:2] == (1, 49):
-        maximum = _codex_macos_sysctl((1, 8))
+    if not isinstance(mib, str) and mib[:2] == (CTL_KERN, KERN_PROCARGS2):
+        maximum = _codex_macos_sysctl((CTL_KERN, KERN_ARGMAX))
         if len(maximum) != 4:
             raise ValueError("invalid argument limit")
         limit = ctypes.c_int32.from_buffer_copy(maximum).value
@@ -749,7 +753,7 @@ def _codex_macos_sysctl(mib: tuple[int, ...] | str) -> bytes:
     capacity = size.value
     if call(*args, buffer, ctypes.byref(size), None, 0):
         raise OSError(ctypes.get_errno(), "sysctl unavailable")
-    if size.value > capacity or (not isinstance(mib, str) and mib[:2] == (1, 49)
+    if size.value > capacity or (not isinstance(mib, str) and mib[:2] == (CTL_KERN, KERN_PROCARGS2)
                                  and size.value == capacity):
         raise ValueError("truncated sysctl buffer")
     return buffer.raw[:size.value]
@@ -775,17 +779,20 @@ def _codex_macos_boot() -> str:
 
 
 def _codex_macos_pids() -> list[int]:
-    rows = _codex_macos_rows(_codex_macos_sysctl((1, 14, 5, os.getuid())))
-    if any(r.kp_proc.p_pid <= 0 or r.kp_eproc.e_ucred.cr_uid != os.getuid() for r in rows):
+    # ALL avoids omitting setuid processes: accept real OR effective own uid.
+    rows = _codex_macos_rows(_codex_macos_sysctl((CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0)))
+    pids = [r.kp_proc.p_pid for r in rows if os.getuid() in
+            (r.kp_eproc.e_ucred.cr_uid, r.kp_eproc.e_pcred.p_ruid)]
+    if any(pid <= 0 for pid in pids) or os.getpid() not in pids:
         raise ValueError("invalid process enumeration")
-    return [r.kp_proc.p_pid for r in rows]
+    return pids
 
 
 def _codex_macos_snapshot(pid: int, proc_root: Path, boot: str) -> tuple:
     if type(pid) is not int or not 0 < pid <= 2147483647:
         raise ValueError("invalid pid")
     try:
-        data = _codex_macos_sysctl((1, 14, 1, pid))
+        data = _codex_macos_sysctl((CTL_KERN, KERN_PROC, KERN_PROC_PID, pid))
     except OSError:
         raise ValueError("process query unavailable") from None
     rows = _codex_macos_rows(data)
@@ -799,7 +806,8 @@ def _codex_macos_snapshot(pid: int, proc_root: Path, boot: str) -> tuple:
         raise ValueError("invalid process identity")
     # A3 uniqueId encodes p_starttime in integer microseconds, without clock slack.
     return ({"kind": "macos", "bootId": boot, "uniqueId": str(tv.tv_sec * 1000000 + tv.tv_usec)},
-            proc.p_stat, extra.e_ucred.cr_uid, extra.e_ppid, os.fsdecode(proc.p_comm))
+            proc.p_stat, (extra.e_ucred.cr_uid, extra.e_pcred.p_ruid), extra.e_ppid,
+            os.fsdecode(proc.p_comm), 8 if proc.p_flag & P_LP64 else 4)
 
 
 def _codex_macos_state(pid: int, start: dict, proc_root: Path, boot: str) -> str:
@@ -817,11 +825,13 @@ def _codex_macos_state(pid: int, start: dict, proc_root: Path, boot: str) -> str
     return "alive" if current == start else "gone"
 
 
-def _codex_macos_environment(data: bytes) -> bytes:
-    """kern_sysctl.c:sysctl_procargsx: argc, exec path, NUL padding, argv, env.
+def _codex_macos_environment(data: bytes, pointer_size: int = 8) -> tuple[bytes, bytes]:
+    """Return env and any ambiguous tail, without consuming alignment as argv.
 
-    sysctl_procargs_no_read / omit_env_vars can succeed without any env.
-    Missing env payload is denied, never a complete negative environment.
+    kern_exec.c:6741–6751 aligns path+executable_path= before argv; 6906–6919
+    aligns argv+env before apple (possibly ZERO padding); 7070–7084 adds pfz
+    first. An aligned pfz without padding is ambiguous: retain the tail only
+    as possible-home evidence, never as env or a malformed Apple string.
     """
     if len(data) < 4:
         raise ValueError("truncated procargs")
@@ -832,33 +842,45 @@ def _codex_macos_environment(data: bytes) -> bytes:
     if end <= 4:
         raise ValueError("invalid executable path")
     pos = end + 1
-    while pos < len(data) and data[pos] == 0:
-        pos += 1
+    pos += -(pos - 4 + len(b"executable_path=")) % pointer_size
     for _ in range(argc):
         end = data.find(b"\0", pos)
         if end < 0:
             raise ValueError("truncated argv")
         pos = end + 1
-    env = data[pos:]
-    if not env or not env.strip(b"\0"):
-        raise PermissionError("environment unavailable")
-    if not env.endswith(b"\0"):
-        raise ValueError("truncated environment")
-    return env.rstrip(b"\0") + b"\0"
+    start = pos
+    while pos < len(data):
+        if data[pos] == 0:  # Alignment between env[] and applev[].
+            return data[start:pos], b""
+        if (pos - 4 + len(b"executable_path=")) % pointer_size == 0 and data[pos:].startswith(b"pfz="):
+            return data[start:pos], data[pos:]
+        end = data.find(b"\0", pos)
+        if end < 0:
+            break
+        pos = end + 1
+    return data[start:], b""
 
 
 def _scan_codex_macos_pid(pid: int, home: Path, proc_root: Path, boot: str) -> tuple:
     for _ in range(2):
         try:
             before = _codex_macos_snapshot(pid, proc_root, boot)
-            if before[2] != os.getuid() or before[1] == b"\5":
+            if os.getuid() not in before[2] or before[1] == b"\5":
                 if before[0] != _codex_macos_snapshot(pid, proc_root, boot)[0]:
                     continue
                 return False, [], None
             denied, result = False, (False, [])
             try:
-                env = _codex_macos_environment(_codex_macos_sysctl((1, 49, pid)))
+                data = _codex_macos_sysctl((CTL_KERN, KERN_PROCARGS2, pid))
+                try:
+                    env, tail = _codex_macos_environment(data, before[5])
+                except ValueError:
+                    env, tail = b"", data  # Rewritten argv: retain possible home evidence.
                 result = _codex_env_home(env, home, proc_root, proc_root)
+                if tail:
+                    matched, issues = _codex_env_home(tail, home, proc_root, proc_root)
+                    result = (result[0] or matched, result[1] + issues)
+                denied = not result[0] and (bool(tail) or _codex_garbled_env(env))
             except PermissionError:
                 denied = True
             except OSError:
