@@ -1469,31 +1469,38 @@ def _child_paths(home: Path, layers: list[tuple[Path, dict[str, Any], bool]],
                  overrides: list[tuple[str, Any]], cwd: Path) -> list[str]:
     result = []
     for key, default in (("sqlite_home", home), ("log_dir", home / "log")):
-        selected = None
+        # Every layer value counts, not only the one this parser would rank highest:
+        # an escaping value anywhere forces the private override, which wins over all.
+        selected = []
         for source, table, managed in layers:
             if key in table:
                 value = table[key]
                 if managed:
                     if not isinstance(value, str) or not _child_private(value, home, source.parent):
                         raise SessionError("Managed child path escapes home: " + key)
-                selected = (value, source.parent)
+                selected.append((value, source.parent))
         for name, value in overrides:
             if name == key or name.startswith(key + "."):
                 if name != key:
                     raise SessionError("Invalid child path override: " + key)
-                selected = (value, cwd)
-        if selected is None:
+                selected = [(value, cwd)]
+        if not selected:
             if not _child_private(str(default), home, cwd):
                 raise SessionError("Default child path escapes home: " + key)
         else:
-            value, base = selected
-            if not isinstance(value, str):
+            if any(not isinstance(value, str) for value, _ in selected):
                 raise SessionError("Invalid child path: " + key)
-            if not _child_private(value, home, base):
+            if not all(_child_private(value, home, base) for value, base in selected):
                 if not _child_private(str(default), home, cwd):
                     raise SessionError("Default child path escapes home: " + key)
                 result.extend(["-c", key + "=" + json.dumps(str(default.resolve()))])
     return result
+
+
+def _child_has_cd(codex_args: list[str]) -> bool:
+    boundary = codex_args.index("--") if "--" in codex_args else len(codex_args)
+    return any(arg == "--cd" or arg.startswith(("--cd=", "-C"))
+               for arg in codex_args[:boundary])
 
 
 def child_argv(codex_args: list[str], home: Path, *,
@@ -1512,6 +1519,10 @@ def child_argv(codex_args: list[str], home: Path, *,
             ):
                 raise SessionError("Relative child path override is unsupported for " + form)
     root = [] if form.startswith("exec") else ["--no-daemon"]
+    if form in {"resume", "fork"} and not _child_has_cd(codex_args):
+        # Without --cd the TUI may reload config in the recorded session cwd
+        # (tui/src/session_resume.rs:35–44); pin the cwd whose layers were checked.
+        root.extend(["--cd", str(cwd.resolve())])
     # Global -c reaches exec/resume too: utils/cli/src/config_override.rs:30–36;
     # cli/src/config_override_args.rs:25–39 preserves overrides across scopes.
     root.extend(["-c", 'cli_auth_credentials_store="file"',
@@ -1528,7 +1539,8 @@ def child_argv(codex_args: list[str], home: Path, *,
 def _run_layers(home: Path, cwd: Path) -> list[tuple[Path, dict[str, Any], bool]]:
     sources = [(p, p.name != "config.toml") for p in _system_policy_paths()]
     sources += [(home / "config.toml", False), (cwd / "config.toml", False)]
-    sources += [(p, False) for p in _project_policy_paths(cwd)]
+    # Codex loads project layers root first, nearest last (config/src/loader/mod.rs:1862).
+    sources += [(p, False) for p in reversed(_project_policy_paths(cwd))]
     if sys.platform == "win32":
         requirements = _windows_requirements_path()
         if requirements is not None:
@@ -1639,9 +1651,17 @@ def _run_identity(pid: int) -> dict[str, Any]:
 def _run_wait(process: Any) -> int:
     import signal
 
-    if sys.platform == "win32":
-        return process.wait()
     previous = {}
+    if sys.platform == "win32":
+        # The console delivers Ctrl-C/Ctrl-Break to Codex directly; a KeyboardInterrupt
+        # here would skip the run's finish and capture.
+        try:
+            for signum in (signal.SIGINT, getattr(signal, "SIGBREAK", signal.SIGINT)):
+                previous[signum] = signal.signal(signum, signal.SIG_IGN)
+            return process.wait()
+        finally:
+            for signum, handler in previous.items():
+                signal.signal(signum, handler)
     def forward(signum: int, frame: Any) -> None:
         try:
             process.send_signal(signum)
@@ -1692,6 +1712,10 @@ def _run_finish(switcher: CodexAccountSwitcher, number: str, record: dict[str, A
                                 f"files retained at {home}. Reconcile the login explicitly "
                                 "before retrying.")
                 return result
+            if custody.state == "conflict":
+                _run_refuse(f"Account {number}: session/backup identity or generation "
+                            f"conflict; files retained at {home}. Reconcile the login "
+                            "explicitly before retrying.")
             if custody.state != "live" or custody.issue_count or custody.invalid_records:
                 _run_refuse("Codex session liveness is uncertain; credential writes refused. "
                                    f"{custody.reason}. Stop identified processes or repair scan "
@@ -1709,6 +1733,7 @@ def run_session(switcher: CodexAccountSwitcher, identifier: str | None, *,
     """Supervise one terminal run. Caller MUST refuse_inherited_home before constructing switcher.
 
     """
+    import signal
     import subprocess
     from uuid import uuid4
     from claude_swap import windows_job
@@ -1716,7 +1741,7 @@ def run_session(switcher: CodexAccountSwitcher, identifier: str | None, *,
     from claude_swap.exceptions import ClaudeSwitchError
     from claude_swap.locking import FileLock
 
-    record, process, committed = None, None, False
+    record, process, committed, ran = None, None, False, False
     try:
         cwd = Path(cwd).resolve(strict=True)
         refuse_inherited_home(env)
@@ -1744,12 +1769,14 @@ def run_session(switcher: CodexAccountSwitcher, identifier: str | None, *,
                 number = switcher._resolve(identifier, data)
             if switcher._disabled_from_data(data, number):
                 _run_refuse("Disabled Codex account cannot be launched.")
-            for alias in aliases:
+            plain = number in aliases
+            # Only the plain shortcut runs on the default's token family; another
+            # account's isolated run never touches an alias's session.
+            for alias in aliases if plain else []:
                 custody = _run_custody(switcher, alias, False)
                 if custody.state == "quiescent":
                     _require(not custody.intent
                              and classify_session(switcher, alias).state != "conflict")
-            plain = number in aliases
             if default and not plain and isinstance(default.get("tokens"), dict):
                 saved = switcher._read_session_backup(number)
                 extract_identity(saved)
@@ -1790,18 +1817,26 @@ def run_session(switcher: CodexAccountSwitcher, identifier: str | None, *,
             _run_notice("Using the default Codex login; this run is not isolated.")
             process = subprocess.Popen(binary + codex_args, env=env, cwd=cwd, shell=False)
             return _run_wait(process)
-        result = _run_wait(process)
-        if sys.platform == "win32":
-            process.close()
-            process = None
-        process, committed = None, False
-        return _run_finish(switcher, number, record, result)
-    except (ClaudeSwitchError, OSError, ValueError, TypeError, KeyError, RuntimeError) as exc:
+        # Keep Ctrl-C from interrupting the finish; the child got its own interrupt.
+        interrupt = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            result = _run_wait(process)
+            if sys.platform == "win32":
+                process.close()
+            process, committed, ran = None, False, True
+            return _run_finish(switcher, number, record, result)
+        finally:
+            signal.signal(signal.SIGINT, interrupt)
+    except (ClaudeSwitchError, OSError, ValueError, TypeError, KeyError, RuntimeError,
+            KeyboardInterrupt) as exc:
         # Session and switch errors carry fixed, token-free reasons worth showing.
         if isinstance(exc, ClaudeSwitchError) and str(exc) != "Codex run refused.":
             _run_notice(str(exc))
-        _run_notice("Codex session setup or capture failed; evidence retained."
-                    if committed else "Codex session was not started.")
+        if ran:
+            _run_notice("Codex exited, but the session capture failed; evidence retained.")
+        else:
+            _run_notice("Codex session setup or capture failed; evidence retained."
+                        if committed else "Codex session was not started.")
         if committed:
             try:
                 if process is not None:

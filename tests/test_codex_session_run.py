@@ -422,3 +422,45 @@ def test_linux_subreaper_prctl(monkeypatch, result):
     else:
         cs._run_subreaper()
     assert calls == [(36, 1, 0, 0, 0)]
+
+
+def test_windows_wait_ignores_console_interrupts(monkeypatch):
+    import signal
+    handlers = {}
+    def install(signum, handler):
+        previous = handlers.get(signum, "original")
+        handlers[signum] = handler
+        return previous
+    monkeypatch.setattr(signal, "signal", install)
+    monkeypatch.setattr(signal, "SIGBREAK", 21, raising=False)
+    monkeypatch.setattr(cs, "sys", SimpleNamespace(platform="win32"))
+    def wait():
+        # Ctrl-C reaches Codex through the console; no KeyboardInterrupt may skip the finish.
+        assert handlers[signal.SIGINT] is signal.SIG_IGN and handlers[21] is signal.SIG_IGN
+        return 3
+    assert cs._run_wait(SimpleNamespace(wait=wait)) == 3
+    assert set(handlers.values()) == {"original"}
+
+
+def test_live_default_alias_does_not_block_other_account(run, monkeypatch):
+    other = auth(chatgpt_user_id="other-user")
+    other["tokens"].update(access_token="other-access", refresh_token="other-refresh")
+    run.default, run.aliases = other, ["2"]
+    original = run.switcher._read_session_backup
+    monkeypatch.setattr(run.switcher, "_read_session_backup",
+                        lambda n: other if n == "2" else original(n))
+    checked = []
+    real = cs._run_custody
+    monkeypatch.setattr(cs, "_run_custody",
+                        lambda s, n, shared: checked.append(n) or real(s, n, shared))
+    assert run.invoke("1") == 0
+    assert checked == ["1"]
+
+
+def test_capture_failure_after_exit_is_not_reported_as_unstarted(run, monkeypatch, capsys):
+    def busy(*args, **kwargs):
+        raise cs.SessionError("Codex run refused.")
+    monkeypatch.setattr(cs, "_run_finish", busy)
+    assert run.invoke() == 1
+    err = capsys.readouterr().err
+    assert "Codex exited, but the session capture failed" in err and "not started" not in err

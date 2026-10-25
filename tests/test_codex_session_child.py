@@ -1,6 +1,7 @@
 """Child construction uses synthetic arguments, environments and temporary homes only."""
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -33,16 +34,21 @@ def test_environment_names(tmp_path, name, present):
     assert warnings == ([f'Removed {name}.'] if present else [])
 
 
-@pytest.mark.parametrize('args,exec_form', [
-    ([], False), (['hello world'], False), (['resume', '--last'], False),
-    (['fork', 'thread', 'prompt'], False), (['exec', 'prompt'], True),
-    (['exec', 'resume', '--last', 'prompt'], True), (['e', 'resume', 'id'], True),
-    (['-m', 'exec', 'resume'], False),
+def pinned():
+    # Without --cd the invocation cwd is checked, so resume/fork pin exactly that one.
+    return ['--no-daemon', '--cd', str(Path.cwd().resolve())]
+
+
+@pytest.mark.parametrize('args,root', [
+    ([], 'tui'), (['hello world'], 'tui'), (['resume', '--last'], 'pinned'),
+    (['fork', 'thread', 'prompt'], 'pinned'), (['exec', 'prompt'], 'exec'),
+    (['exec', 'resume', '--last', 'prompt'], 'exec'), (['e', 'resume', 'id'], 'exec'),
+    (['-m', 'exec', 'resume'], 'pinned'),
 ])
-def test_supported_order(tmp_path, args, exec_form):
+def test_supported_order(tmp_path, args, root):
     original = args.copy()
-    assert session.child_argv(args, tmp_path, config_layers=[]) == (
-        ([] if exec_form else ['--no-daemon']) + STORES + args)
+    prefix = {'tui': ['--no-daemon'], 'exec': [], 'pinned': pinned()}[root]
+    assert session.child_argv(args, tmp_path, config_layers=[]) == prefix + STORES + args
     assert args == original
 
 
@@ -310,7 +316,7 @@ def test_recorded_cwd_relative_path_override_refused(tmp_path, form, key, value)
 def test_recorded_cwd_absolute_private_override_preserved(tmp_path, form, key):
     args = form + ['-c', key + '=' + json.dumps(str(tmp_path / 'private'))]
     assert session.child_argv(args, tmp_path, config_layers=[]) == (
-        ([] if form[0] == 'exec' else ['--no-daemon']) + STORES + args)
+        ([] if form[0] == 'exec' else pinned()) + STORES + args)
 
 
 @pytest.mark.parametrize('key', sorted(session._CHILD_FORBIDDEN | {'sqlite_home', 'log_dir'}))
@@ -393,3 +399,22 @@ def test_child_argv_explicit_spawn_cwd(tmp_path):
     result = child_argv(["-c", 'sqlite_home="home"', "exec", "hi"], home,
                         config_layers=[], cwd=tmp_path)
     assert not any(item.startswith('sqlite_home="/') for item in result)
+
+
+@pytest.mark.parametrize('form', [['resume', '--last'], ['fork', 'thread']])
+@pytest.mark.parametrize('cd', [['--cd', 'x'], ['-C', 'x'], ['--cd=x'], ['-Cx']])
+def test_explicit_cd_not_pinned_twice(tmp_path, form, cd):
+    args = cd + form
+    assert session.child_argv(args, tmp_path, config_layers=[]) == (
+        ['--no-daemon'] + STORES + args)
+
+
+@pytest.mark.parametrize('key', ['sqlite_home', 'log_dir'])
+def test_nearest_private_layer_cannot_hide_outer_escape(tmp_path, key):
+    # Codex ranks project layers root first and nearest last; any escaping layer
+    # value must still be overridden, whichever layer this parser ranks highest.
+    home = tmp_path / 'home'
+    outer = (tmp_path / '.codex' / 'config.toml', {key: str(tmp_path / 'outside')}, False)
+    inner = (tmp_path / 'p' / '.codex' / 'config.toml', {key: str(home / 'private')}, False)
+    for layers in ([outer, inner], [inner, outer]):
+        assert (key + '=') in session.child_argv([], home, config_layers=layers)[-1]
