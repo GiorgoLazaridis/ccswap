@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import math
 import os
 import re
 import subprocess
@@ -177,6 +178,40 @@ def process_state(pid: int, start: dict[str, str], *, api=None) -> State:
     return "gone" if state == "alive" and current != start else state
 
 
+def wait_identity_gone(pid: int, start: dict[str, str], timeout_s: float, *, api=None) -> State:
+    """Wait on one verified process handle; timeout is alive, API failures unknown."""
+    if (not isinstance(start, dict) or set(start) != {"kind", "creationTime100ns"}
+            or start["kind"] != "windows" or not isinstance(start["creationTime100ns"], str)
+            or re.fullmatch(r"[0-9]+", start["creationTime100ns"]) is None
+            or type(pid) is not int or not 0 < pid <= INFINITE
+            or isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float))
+            or not math.isfinite(timeout_s) or not 0 <= timeout_s <= (INFINITE - 1) / 1000):
+        return "unknown"
+    try:
+        api = api if api is not None else _kernel32()
+        process = api.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, pid)
+    except OSError:
+        return "unknown"
+    if not process:
+        return "gone" if ctypes.get_last_error() == ERROR_INVALID_PARAMETER else "unknown"
+    state: State = "unknown"
+    try:
+        if _creation(api, process) != start:
+            state = "gone"
+        else:
+            result = api.WaitForSingleObject(process, math.ceil(timeout_s * 1000))
+            if result == WAIT_OBJECT_0:
+                state = "gone"
+            elif result == WAIT_TIMEOUT:
+                state = "alive"
+    except OSError:
+        pass
+    finally:
+        if not api.CloseHandle(process):
+            state = "unknown"
+    return state
+
+
 def job_name(run_id: str) -> str:
     """Return the job name for a canonical UUID4 run identifier."""
     value = UUID(run_id)
@@ -200,8 +235,11 @@ def _active(api, job) -> int:
 def query_job(run_id: str, *, api=None) -> State:
     """Query a validated run and close its query handle before deciding custody.
 
-    "gone" (name absent) is meaningful only with a proven-gone supervisor
-    identity; the Local\\ namespace is per logon session.
+    A6: quiescence requires job gone AND supervisor identity gone AND recorded
+    child identity gone, checked within a bounded deadline; timeout is uncertain.
+    "gone" (name absent) alone is insufficient: termination is asynchronous.
+    The Local\\ namespace is per logon session. Unrecorded grandchildren are
+    covered by kernel termination: no further user-mode code runs once initiated.
     """
     name = job_name(run_id)
     try:

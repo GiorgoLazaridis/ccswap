@@ -266,7 +266,7 @@ def test_close_can_retry(api, executable):
 
 
 @pytest.mark.parametrize("run_id", [
-    "bad", str(uuid4()).upper(), "00000000-0000-0000-0000-000000000000",
+    "bad", "A1234567-1234-4123-8123-123456789ABC", "00000000-0000-0000-0000-000000000000",
 ])
 def test_invalid_job_name(api, run_id):
     with pytest.raises(ValueError):
@@ -410,6 +410,8 @@ def test_native_kill_completion(tmp_path, parent_death):
         identities = json.loads(marker.read_text())
         assert w.query_job(run_id) == "alive"
         if owner:
+            supervisor_start = w.process_identity(owner.pid)[1]
+            identities.append((owner.pid, supervisor_start))
             owner.kill()
             owner.wait(timeout=10)
         else:
@@ -419,7 +421,7 @@ def test_native_kill_completion(tmp_path, parent_death):
             time.sleep(0.02)
         assert w.query_job(run_id) == "gone"
         for pid, start in identities:
-            assert w.process_state(pid, start) == "gone"
+            assert w.wait_identity_gone(pid, start, max(0, deadline - time.monotonic())) == "gone"
     finally:
         if owner and owner.poll() is None:
             owner.kill()
@@ -578,3 +580,60 @@ def test_native_extra_inheritable_handle_is_excluded(tmp_path):
                                     stderr=subprocess.PIPE, timeout=15)
     assert result.returncode == 0, result.stderr.decode(errors="replace")
     assert output.read_text().strip() == "excluded"
+
+
+@pytest.mark.parametrize("result,expected", [
+    (w.WAIT_OBJECT_0, "gone"), (w.WAIT_TIMEOUT, "alive"), (0xFFFFFFFF, "unknown"),
+])
+def test_wait_identity_gone(api, monkeypatch, result, expected):
+    start = {"kind": "windows", "creationTime100ns": str((2 << 32) + 7)}
+    def wait(handle, timeout):
+        assert handle == 1
+        assert timeout == 1250
+        assert api.calls[-1][0] == "GetProcessTimes"
+        return result
+    monkeypatch.setattr(api, "WaitForSingleObject", wait)
+    assert w.wait_identity_gone(123, start, 1.25, api=api) == expected
+    assert api.calls[0] == (
+        "OpenProcess", (w.PROCESS_QUERY_LIMITED_INFORMATION | w.SYNCHRONIZE, False, 123),
+    )
+    assert api.closed == [1]
+
+
+def test_wait_identity_mismatch_is_gone(api):
+    start = {"kind": "windows", "creationTime100ns": "8"}
+    assert w.wait_identity_gone(123, start, 10, api=api) == "gone"
+    assert "WaitForSingleObject" not in [name for name, _ in api.calls]
+    assert api.closed == [1]
+
+
+@pytest.mark.parametrize("failure,error,expected", [
+    ("OpenProcess", 5, "unknown"), ("OpenProcess", 87, "gone"),
+    ("GetProcessTimes", 5, "unknown"), ("CloseHandle", 5, "unknown"),
+])
+def test_wait_identity_failures(api, failure, error, expected):
+    api.fail, api.error = failure, error
+    start = {"kind": "windows", "creationTime100ns": str((2 << 32) + 7)}
+    assert w.wait_identity_gone(123, start, 0, api=api) == expected
+    names = [name for name, _ in api.calls]
+    assert ("CloseHandle" in names) == (failure != "OpenProcess")
+
+
+@pytest.mark.parametrize("timeout", [-1, float("inf"), float("nan"), True, "10", w.INFINITE])
+def test_wait_identity_invalid_timeout(api, timeout):
+    start = {"kind": "windows", "creationTime100ns": "8"}
+    assert w.wait_identity_gone(123, start, timeout, api=api) == "unknown"
+    assert not api.calls
+
+
+def test_wait_identity_invalid_start(api):
+    assert w.wait_identity_gone(123, {}, 10, api=api) == "unknown"
+    assert not api.calls
+
+
+def test_wait_identity_unavailable_api(monkeypatch):
+    def unavailable():
+        raise OSError("unavailable")
+    monkeypatch.setattr(w, "_kernel32", unavailable)
+    start = {"kind": "windows", "creationTime100ns": "8"}
+    assert w.wait_identity_gone(123, start, 10) == "unknown"
