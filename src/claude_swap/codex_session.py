@@ -14,9 +14,11 @@ import shutil
 import stat
 import sys
 import tempfile
+import tomllib
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from uuid import UUID
 
 from claude_swap.exceptions import SessionError
@@ -738,3 +740,181 @@ def sync_sharing(backup_root: Path, home: Path, source_home: Path,
         raise SessionError(
             f"Session sharing refused{detail}; existing evidence retained."
         ) from None
+
+
+def _policy_error(source: object, key: str) -> None:
+    raise SessionError(
+        f"Cannot establish a compatible isolated Codex configuration: {source}/{key}. "
+        "No new session writer started."
+    )
+
+
+def _program_data() -> Path:
+    import ctypes
+
+    fallback = Path(r"C:\ProgramData")
+    try:
+        shell = ctypes.WinDLL("shell32")
+        ole = ctypes.WinDLL("ole32")
+        query = shell.SHGetKnownFolderPath
+        query.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p,
+                          ctypes.POINTER(ctypes.c_void_p)]
+        query.restype = ctypes.c_int32
+        free = ole.CoTaskMemFree
+        free.argtypes = [ctypes.c_void_p]
+        free.restype = None
+        guid = (ctypes.c_ubyte * 16).from_buffer_copy(
+            UUID("62ab5d82-fdc1-4dc3-a9dd-070d1d495d97").bytes_le,
+        )
+        pointer = ctypes.c_void_p()
+        try:
+            if query(ctypes.byref(guid), 0, None, ctypes.byref(pointer)) != 0 or not pointer.value:
+                return fallback
+            path = Path(ctypes.wstring_at(pointer))
+            return path if path.is_absolute() else fallback
+        finally:
+            if pointer.value:
+                free(pointer)
+    except (OSError, AttributeError, ValueError):
+        return fallback
+
+
+def _windows_requirements_path() -> Path | None:
+    import winreg
+
+    source = r"HKLM\SOFTWARE\Policies\OpenAI\Codex"
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r"SOFTWARE\Policies\OpenAI\Codex", 0,
+                            winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as key:
+            value, kind = winreg.QueryValueEx(key, "RequirementsPath")
+    except FileNotFoundError:
+        return None
+    except OSError:
+        _policy_error(source, "RequirementsPath")
+    if kind != winreg.REG_SZ or not _text(value) or not Path(value).is_absolute():
+        _policy_error(source, "RequirementsPath")
+    return Path(value)
+
+
+def _system_policy_paths() -> list[Path]:
+    if sys.platform == "win32":
+        root = _program_data() / "OpenAI" / "Codex"
+        return [root / "config.toml", root / "requirements.toml"]
+    paths = [Path("/etc/codex") / name for name in (
+        "config.toml", "requirements.toml", "managed_config.toml",
+    )]
+    if sys.platform == "darwin":
+
+        root = Path("/Library/Managed Preferences")
+        try:
+            import pwd
+
+            user = pwd.getpwuid(os.getuid()).pw_name
+        except (ImportError, KeyError, OSError):
+            _policy_error(root, "managed Codex preferences are not supported yet")
+        paths.extend([root / "com.openai.codex.plist",
+                      root / user / "com.openai.codex.plist"])
+    return paths
+
+
+def _project_policy_paths(cwd: Path) -> list[Path]:
+    try:
+        directory = cwd.resolve(strict=True)
+        if not directory.is_dir():
+            _policy_error(cwd, "project discovery")
+    except (OSError, RuntimeError):
+        _policy_error(cwd, "project discovery")
+    return [parent / ".codex" / "config.toml" for parent in (directory, *directory.parents)]
+
+
+def _check_policy_table(table: dict[str, Any], source: Path, workspace: str) -> None:
+    for key, value in table.items():
+        if key == "config_server":
+            _policy_error(source, "config_server (unresolved managed source)")
+        elif key in ("profile", "experimental_thread_store_endpoint"):
+            # Codex rejects these legacy settings even when TOML parsing succeeds.
+            _policy_error(source, key)
+        elif key == "forced_login_method":
+            if value != "chatgpt":
+                _policy_error(source, key)
+        elif key == "allowed_login_methods":
+            if (not isinstance(value, list) or not all(
+                isinstance(item, str) and item in ("api", "chatgpt") for item in value
+            ) or "chatgpt" not in value):
+                _policy_error(source, key)
+        elif key in ("forced_chatgpt_workspace_id", "allowed_chatgpt_workspaces"):
+            items = ([value] if key == "forced_chatgpt_workspace_id"
+                     and isinstance(value, str) else value)
+            if not isinstance(items, list) or not all(isinstance(item, str) for item in items):
+                _policy_error(source, key)
+            workspaces = [item.strip() for item in items if item.strip()]
+            if (workspaces or key == "allowed_chatgpt_workspaces") and workspace not in workspaces:
+                _policy_error(source, key)
+        if isinstance(value, dict):
+            _check_policy_table(value, source, workspace)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    _check_policy_table(item, source, workspace)
+
+
+def _check_policy_file(path: Path, workspace: str) -> None:
+    try:
+        # stat distinguishes a missing file from a dangling link or denied lookup.
+        try:
+            metadata = path.stat()
+        except FileNotFoundError:
+            path.lstat()
+            _policy_error(path, "source")
+        if path.suffix == ".plist":
+            _policy_error(path, "managed Codex preferences are not supported yet")
+        if not stat.S_ISREG(metadata.st_mode):
+            _policy_error(path, "source")
+        with path.open("rb") as stream:
+            document = tomllib.load(stream)
+        _check_policy_table(document, path, workspace)
+    except FileNotFoundError:
+        # Only a missing directory entry (not a dangling symlink) is absent.
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return
+        except OSError:
+            pass
+        _policy_error(path, "source")
+    except (OSError, ValueError, UnicodeError, RecursionError):
+        _policy_error(path, "source")
+
+
+def check_login_policy(
+    default_home: Path, cwd: Path, identity: object, plan: object, *,
+    system_paths: Iterable[Path] | None = None,
+    windows_policy: Callable[[], Path | None] | None = None,
+) -> None:
+    """Conservatively scan local layers; this is not an effective-policy resolver.
+
+    Injected system_paths replaces OS discovery (including managed plist paths).
+    windows_policy supplies the registry path reader; its errors are never absence.
+    Profile argv rejection belongs to launch-form validation, before this gate.
+    """
+    if not session_plan_supported(plan):
+        raise SessionError(
+            "Session mode does not support workspace-managed "
+            "(business/enterprise/education) accounts yet."
+        )
+    workspace = validate_identity(identity)["workspaceId"]
+    paths = [default_home / "config.toml"]
+    paths.extend(_system_policy_paths() if system_paths is None else system_paths)
+    if sys.platform == "win32" or windows_policy is not None:
+        try:
+            policy = (windows_policy or _windows_requirements_path)()
+        except (OSError, ValueError):
+            _policy_error(r"HKLM\SOFTWARE\Policies\OpenAI\Codex", "RequirementsPath")
+        if policy is not None:
+            if not isinstance(policy, Path) or not policy.is_absolute():
+                _policy_error(r"HKLM\SOFTWARE\Policies\OpenAI\Codex", "RequirementsPath")
+            paths.append(policy)
+    paths.extend(_project_policy_paths(cwd))
+    for path in paths:
+        _check_policy_file(path, workspace)
