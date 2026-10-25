@@ -276,6 +276,23 @@ class CodexAccountSwitcher:
     def _read_account_auth(self, number: str) -> dict[str, Any] | None:
         return self._read_json(self._credential_path(number))
 
+    def _read_session_backup(self, number: str) -> dict[str, Any] | None:
+        """Strict session-only read; caller holds the store lock."""
+        from claude_swap.codex_session import _checked_parents, load_document
+
+        path = self._credential_path(number)
+        _checked_parents(path.parent, self.backup_dir)
+        return load_document(path)
+
+    def _write_session_backup(self, number: str, auth: dict[str, Any]) -> None:
+        """Replace an existing backup only; never recreate a removed slot."""
+        from claude_swap.codex_session import _ordinary, _require, _session_write
+
+        path = self._credential_path(number)
+        _require(_ordinary(path))
+        _session_write(self.backup_dir, path, auth)
+        self._usage_cache.pop(number, None)
+
     def _next_number(self, data: dict[str, Any]) -> str:
         numbers = [int(number) for number in data["accounts"] if number.isdigit()]
         return str(max(numbers, default=0) + 1)

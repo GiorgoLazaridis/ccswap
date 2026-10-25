@@ -16,14 +16,18 @@ import sys
 import tempfile
 import tomllib
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from claude_swap.exceptions import SessionError
 from claude_swap.fsutil import atomic_write_bytes, atomic_write_text, replace_with_retry
 from claude_swap.session import slugify_email
+
+if TYPE_CHECKING:
+    from claude_swap.codex import CodexAccountSwitcher
 
 
 def _require(condition: bool) -> None:
@@ -258,9 +262,10 @@ def validate_record(value: object, kind: str, *, run_id: str | None = None) -> d
     return data
 
 
-def load_record(path: Path, kind: str) -> dict[str, Any] | None:
+def load_document(path: Path) -> dict[str, Any] | None:
     """Read only: missing returns None; unreadable and malformed remain distinct errors."""
     try:
+        _ordinary(path)
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         if not hasattr(os, "O_NOFOLLOW"):
             _require(not path.is_symlink())
@@ -274,13 +279,122 @@ def load_record(path: Path, kind: str) -> dict[str, Any] | None:
     try:
         _require(stat.S_ISREG(os.fstat(descriptor).st_mode))
         with os.fdopen(descriptor, "r", encoding="utf-8", closefd=False) as stream:
-            return validate_record(_json(stream.read()), kind, run_id=path.stem)
+            return _object(_json(stream.read()), ())
     except OSError:
         raise SessionError("Unreadable session record.") from None
     except (ValueError, TypeError, UnicodeError, RecursionError, SessionError):
         raise SessionError("Malformed session record.") from None
     finally:
         os.close(descriptor)
+
+
+def load_record(path: Path, kind: str) -> dict[str, Any] | None:
+    """Strictly read and validate a coordination record."""
+    data = load_document(path)
+    return None if data is None else validate_record(data, kind, run_id=path.stem)
+
+
+@dataclass(frozen=True)
+class ReconcileResult:
+    """Report custody changes without exposing credential contents."""
+
+    state: str
+    reason: str | None = None
+
+
+def reconcile_session(
+    switcher: CodexAccountSwitcher, number: str, *, quiescent: bool,
+) -> ReconcileResult:
+    """Apply D6 under the caller-held R/.lock after a fresh quiescence check.
+
+    Never scans, refreshes or launches. Path checks follow A7: hostile same-uid
+    swaps between validation and mutation are outside the threat model.
+    Stale-intent recovery belongs to the explicit replacement transaction.
+    """
+    if quiescent is not True:
+        return ReconcileResult("conflict", "not_quiescent")
+    reason = "invalid_slot"
+    try:
+        _require(_decimal(number, positive=True) and not number.startswith("0"))
+        root = switcher.backup_dir
+        _require(_absolute(str(root)) and root.resolve(strict=True) == root)
+        _checked_parents(switcher.sequence_file.parent, root)
+        sequence = load_document(switcher.sequence_file)
+        if sequence is None:
+            return ReconcileResult("conflict", "missing_slot")
+        accounts = _object(sequence, ("accounts",))["accounts"]
+        _require(isinstance(accounts, dict))
+        if number not in accounts:
+            return ReconcileResult("conflict", "missing_slot")
+        slot = _object(accounts[number], ("email", "accountId"))
+        _require(_text(slot["email"]))
+        email = slot["email"].strip().casefold()
+        home = root / "codex" / "sessions" / f"{number}-{slugify_email(email)}"
+        reason = "invalid_home"
+        _checked_parents(home, root)
+        _owned(home)
+        manifest_path = home / ".ccswap-session.json"
+        manifest = load_record(manifest_path, "manifest")
+        _require(manifest is not None)
+        source = switcher.codex_home.resolve(strict=True)
+        _require(manifest["accountNumber"] == number and manifest["home"] == str(home)
+                 and manifest["sourceHome"] == str(source)
+                 and manifest["bootstrapState"] == "ready"
+                 and not home.is_relative_to(source) and not source.is_relative_to(home))
+        reason = "stale_intent"
+        intent = home.parent / f".{home.name}.stale.json"
+        if load_record(intent, "stale") is not None:
+            return ReconcileResult("conflict", reason)
+        reason = "invalid_backup"
+        stored = switcher._read_session_backup(number)
+        _require(stored is not None)
+        stored_identity, _ = extract_identity(stored)
+        reason = "invalid_session_auth"
+        current = load_document(home / "auth.json")
+        _require(current is not None)
+        current_identity, _ = extract_identity(current)
+        reason = "identity_mismatch"
+        baseline = manifest["identity"]
+        _require(slot["accountId"] == baseline["workspaceId"])
+        _require(all(same_identity(left, right) for left, right in (
+            (baseline, stored_identity), (baseline, current_identity),
+            (stored_identity, current_identity),
+        )))
+        _require(all(identity["email"] == slot["email"].strip().casefold()
+                     for identity in (baseline, stored_identity, current_identity)))
+        reason = "fingerprint_failed"
+        h, s = auth_fingerprint(current), auth_fingerprint(stored)
+        b = manifest["baselineFingerprint"]
+        state = "unchanged"
+        credential_directories = [switcher.credentials_dir, home]
+        if h == s:
+            pass
+        elif s == b:
+            reason = "backup_write_failed"
+            switcher._write_session_backup(number, current)
+            state = "adopted_session"
+            credential_directories = [switcher.credentials_dir]
+        elif h == b:
+            reason = "auth_write_failed"
+            _session_write(root, home / "auth.json", stored)
+            h = s
+            state = "reseeded_session"
+            credential_directories = [home]
+        else:
+            return ReconcileResult("conflict", "both_moved")
+        if h != b:
+            # Also invalidate after interrupted adoption where H == S but B is stale.
+            switcher._usage_cache.pop(number, None)
+            reason = "credential_sync_failed"
+            for directory in credential_directories:
+                _sync_directory(directory)
+            reason = "manifest_write_failed"
+            _session_write(root, manifest_path, dict(manifest, baselineFingerprint=h))
+            reason = "manifest_sync_failed"
+            _sync_directory(home)
+        return ReconcileResult(state)
+    except (OSError, ValueError, TypeError, RecursionError, SessionError):
+        return ReconcileResult("conflict", reason)
 
 
 def _ordinary(path: Path, *, directory: bool = False) -> bool:
