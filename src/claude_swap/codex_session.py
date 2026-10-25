@@ -1186,3 +1186,205 @@ def check_login_policy(
     paths.extend(_project_policy_paths(cwd))
     for path in paths:
         _check_policy_file(path, workspace)
+
+
+_CHILD_DROP = (
+    "OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN",
+    "CODEX_REFRESH_TOKEN_URL_OVERRIDE", "CODEX_APP_SERVER_LOGIN_CLIENT_ID",
+    "CODEX_EXEC_SERVER_URL",
+)
+_CHILD_FORBIDDEN = {
+    "cli_auth_credentials_store", "mcp_oauth_credentials_store", "model_provider",
+    "model_providers", "profile", "profiles", "chatgpt_base_url",
+    "experimental_thread_store_endpoint", "forced_login_method", "forced_chatgpt_workspace_id",
+}
+
+
+def refuse_inherited_home(env: dict[str, str]) -> None:
+    """Reject an explicitly selected parent home before account discovery."""
+    if env.get("CODEX_HOME"):
+        raise SessionError("Inherited CODEX_HOME is not supported.")
+
+
+def _child_resolved(path: Path) -> Path:
+    resolved = path.resolve()
+    parent = resolved
+    while True:
+        try:
+            parent.resolve(strict=True)
+            return resolved
+        except FileNotFoundError:
+            if parent == parent.parent:
+                raise SessionError("Cannot resolve isolated child path.")
+            parent = parent.parent
+
+
+def _child_private(value: str, home: Path, base: Path) -> bool:
+    try:
+        if value == "~" or value.startswith(("~/", "~\\")):
+            raise SessionError("Home expansion is not supported in child paths.")
+        path = Path(value)
+        if not path.is_absolute():
+            path = base / path
+        return _child_resolved(path).is_relative_to(_child_resolved(home))
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise SessionError("Cannot resolve isolated child path.") from exc
+
+
+def child_env(env: dict[str, str], home: Path) -> tuple[dict[str, str], list[str]]:
+    """Build a private child environment; diagnostics contain variable names only."""
+    result = env.copy()
+    warnings = []
+    for name in _CHILD_DROP:
+        if name in result:
+            del result[name]
+            warnings.append(f"Removed {name}.")
+    if "CODEX_SQLITE_HOME" in result:
+        value = result["CODEX_SQLITE_HOME"].strip()
+        if not value or not _child_private(value, home, Path.cwd()):
+            del result["CODEX_SQLITE_HOME"]
+            warnings.append("Removed CODEX_SQLITE_HOME.")
+        elif not Path(value).is_absolute() or value != result["CODEX_SQLITE_HOME"]:
+            # core/src/config/mod.rs:272–282 resolves this against --cd, not the parent cwd.
+            # Pin a private relative value before the child's working directory can change.
+            result["CODEX_SQLITE_HOME"] = str(Path(value).resolve())
+    result["CODEX_HOME"] = str(home)
+    return result, warnings
+
+
+def _child_override(raw: str) -> tuple[str, Any]:
+    key, separator, value = raw.partition("=")
+    if not separator or not key.strip():
+        raise SessionError("Invalid child config override.")
+    # utils/cli/src/config_override.rs:65–94: first '=', TOML sentinel, quote stripping fallback.
+    try:
+        parsed = tomllib.loads("_x_ = " + value.strip())["_x_"]
+    except (tomllib.TOMLDecodeError, KeyError):
+        parsed = value.strip().strip("\"'")
+    key = key.strip()
+    # Codex uses literal dot-separated path components, not TOML quoted-key syntax.
+    if key.split(".")[0] in _CHILD_FORBIDDEN:
+        raise SessionError("Unsupported child config key: " + key.split(".")[0])
+    return key, parsed
+
+
+# Root value options: tui/src/cli.rs:75–76, utils/cli/src/shared_options.rs:10–93,
+# cli/src/main.rs:964–988. Images consume 1.. values, unlike exec resume's single image.
+_CHILD_VALUES = {
+    "--model", "-m", "--sandbox", "-s", "--ask-for-approval", "-a", "--cd", "-C",
+    "--add-dir", "--enable", "--disable", "--image", "-i", "--config", "-c",
+}
+_CHILD_FLAGS = {
+    "--strict-config", "--search", "--no-alt-screen", "--no-daemon", "--worktree",
+    "--approve-for-me", "--not-so-yolo", "--dangerously-bypass-approvals-and-sandbox",
+    "--yolo", "--dangerously-bypass-hook-trust", "--help", "-h", "--version", "-V",
+}
+_CHILD_COMMANDS = set("""agents tcp-tunnel review login logout mcp plugin app-server remote-control
+app completion update doctor sandbox debug execpolicy apply a queue archive delete migrate-rollouts
+migrate-nfs-db unarchive cloud cloud-tasks responses-api-proxy stdio-to-uds features exec-server
+daemon service remote clear-memories""".split())
+
+
+def _child_parse(args: list[str]) -> tuple[str, list[tuple[str, Any]], Path]:
+    form, positional, overrides = "interactive", False, []
+    cwd = Path.cwd()
+    index = 0
+    while index < len(args):
+        token = args[index]
+        index += 1
+        if token == "--":
+            break
+        if token.startswith("-") and token != "-":
+            option, equal, value = token.partition("=")
+            if not token.startswith("--") and len(token) > 2:
+                option, value, equal = token[:2], token[2:].lstrip("="), "="
+            if option in {"-p", "--profile", "--oss", "--local-provider",
+                          "--remote", "--remote-auth-token-env"}:
+                raise SessionError("Unsupported child option: " + option)
+            values = _CHILD_VALUES.copy()
+            flags = _CHILD_FLAGS.copy()
+            if form != "interactive":
+                flags.update({"--last", "--all", "--include-non-interactive"})
+            if form.startswith("exec"):
+                values.update({"--thread-source", "--cyber-access-program", "--output-schema",
+                               "--color", "--output-last-message", "-o"})
+                flags.update({"--skip-git-repo-check", "--ephemeral", "--ignore-user-config",
+                              "--ignore-rules", "--json", "--experimental-json"})
+            if option in values:
+                if not equal:
+                    if index == len(args) or args[index].startswith("-"):
+                        raise SessionError("Missing child option value: " + option)
+                    value = args[index]
+                    index += 1
+                if option in {"-C", "--cd"}:
+                    if value.startswith("~"):
+                        raise SessionError("Home expansion is not supported in child paths.")
+                    cwd = Path.cwd() / value
+                if option in {"-c", "--config"}:
+                    overrides.append(_child_override(value))
+                if option in {"-i", "--image"} and form != "exec resume":
+                    while index < len(args) and not args[index].startswith("-"):
+                        index += 1
+            elif option not in flags or equal:
+                raise SessionError("Unsupported child option.")
+            continue
+        if not positional and form == "interactive" and token in {"exec", "e", "resume", "fork"}:
+            form = "exec" if token == "e" else token
+        elif not positional and form == "exec" and token == "resume":
+            form = "exec resume"
+        else:
+            if (form in {"interactive", "exec"}) and (
+                token in _CHILD_COMMANDS or (form == "exec" and token == "fork")
+            ):
+                raise SessionError("Unsupported child subcommand: " + token)
+            positional = True
+    return form, overrides, cwd
+
+
+def _child_paths(home: Path, layers: list[tuple[Path, dict[str, Any], bool]],
+                 overrides: list[tuple[str, Any]], cwd: Path) -> list[str]:
+    result = []
+    for key, default in (("sqlite_home", home), ("log_dir", home / "log")):
+        selected = None
+        for source, table, managed in layers:
+            if key in table:
+                value = table[key]
+                if managed:
+                    if not isinstance(value, str) or not _child_private(value, home, source.parent):
+                        raise SessionError("Managed child path escapes home: " + key)
+                selected = (value, source.parent)
+        for name, value in overrides:
+            if name == key or name.startswith(key + "."):
+                if name != key:
+                    raise SessionError("Invalid child path override: " + key)
+                selected = (value, cwd)
+        if selected is None:
+            if not _child_private(str(default), home, cwd):
+                raise SessionError("Default child path escapes home: " + key)
+        else:
+            value, base = selected
+            if not isinstance(value, str):
+                raise SessionError("Invalid child path: " + key)
+            if not _child_private(value, home, base):
+                if not _child_private(str(default), home, cwd):
+                    raise SessionError("Default child path escapes home: " + key)
+                result.extend(["-c", key + "=" + json.dumps(str(default.resolve()))])
+    return result
+
+
+def child_argv(codex_args: list[str], home: Path, *,
+               config_layers: list[tuple[Path, dict[str, Any], bool]]) -> list[str]:
+    """Validate supported invocation forms and add root isolation controls."""
+    form, overrides, cwd = _child_parse(codex_args)
+    root = [] if form.startswith("exec") else ["--no-daemon"]
+    # Global -c reaches exec/resume too: utils/cli/src/config_override.rs:30–36;
+    # cli/src/config_override_args.rs:25–39 preserves overrides across scopes.
+    root.extend(["-c", 'cli_auth_credentials_store="file"',
+                 "-c", 'mcp_oauth_credentials_store="file"'])
+    # Global replacements follow all user overrides, including those in child scopes.
+    paths = _child_paths(home, config_layers, overrides, cwd)
+    if paths:
+        # Put replacements before '--' or after all parsed options; -c is global.
+        boundary = codex_args.index("--") if "--" in codex_args else len(codex_args)
+        return root + codex_args[:boundary] + paths + codex_args[boundary:]
+    return root + codex_args
