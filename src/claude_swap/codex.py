@@ -32,7 +32,9 @@ from claude_swap.codex_usage import (
     fetch_codex_usage,
     refresh_codex_auth,
 )
-from claude_swap.exceptions import AccountNotFoundError, ConfigError, LockError, SwitchError, ValidationError
+from claude_swap.exceptions import (
+    AccountNotFoundError, ConfigError, LockError, SessionError, SwitchError, ValidationError,
+)
 from claude_swap.json_output import USAGE_API_KEY
 from claude_swap.locking import FileLock
 from claude_swap.models import AccountSnapshot, AccountsSnapshot
@@ -388,8 +390,11 @@ class CodexAccountSwitcher:
 
         numbers = [int(number) for number in data["accounts"] if number.isdigit()]
         sessions = self.backup_dir / "codex" / "sessions"
-        retained = [path.name.split("-", 1)[0] for path in sessions.iterdir()] if (
-            _ordinary(sessions, directory=True)) else []
+        try:
+            retained = [path.name.split("-", 1)[0] for path in sessions.iterdir()] if (
+                _ordinary(sessions, directory=True)) else []
+        except OSError:
+            raise SwitchError("Cannot read Codex session homes; choose a slot explicitly") from None
         number = max(numbers, default=0) + 1
         while str(number) in retained:
             number += 1
@@ -1136,7 +1141,8 @@ class CodexAccountSwitcher:
                             )
                         else:
                             raise exc
-                    except (CodexUsageError, ConfigError, SwitchError) as refresh_exc:
+                    except (CodexUsageError, ConfigError, SwitchError, SessionError,
+                            OSError) as refresh_exc:
                         entry = self._usage_failure_entry(previous, refresh_exc)
                     else:
                         entry = UsageEntry(last_good=usage, fetched_at=now)
@@ -1215,18 +1221,30 @@ class CodexAccountSwitcher:
                         stored_identity, _ = extract_identity(stored_auth)
                         if same_identity(live_identity, stored_identity):
                             return None
-                        decision = default_write_decision(live_auth, h_auth, stored_auth, manifest)
-                        if decision == "skip":
+                        # A lineage member under another login owner is still this family.
+                        if default_write_decision(live_auth, h_auth, stored_auth, manifest) == "skip":
                             return None
                     live_tokens = live_auth.get("tokens")
                     if (isinstance(live_tokens, dict)
                             and live_tokens.get("refresh_token") == expected_refresh):
                         return None
+                if manifest is not None and not (
+                        auth_fingerprint(h_auth) == auth_fingerprint(stored_auth)
+                        == manifest["baselineFingerprint"]):
+                    return None
             except (SwitchError, ConfigError, SessionError):
                 return None
             refreshed_auth = refresh_codex_auth(stored_auth)
             if manifest is not None:
-                replace_session_credentials(self, number, refreshed_auth, "refresh")
+                try:
+                    replace_session_credentials(self, number, refreshed_auth, "refresh")
+                except (OSError, SessionError):
+                    # The old refresh token is already consumed: keep the new one in the
+                    # backup so the next reconcile re-seeds or reports both_moved.
+                    self._write_session_backup(number, refreshed_auth)
+                    raise SwitchError(
+                        "Codex session changed during refresh; the refreshed login was "
+                        "saved to the backup and awaits reconciliation") from None
             else:
                 self._write_json(self._credential_path(number), refreshed_auth)
                 self._usage_cache.pop(number, None)

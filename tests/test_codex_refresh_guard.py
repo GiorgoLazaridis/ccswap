@@ -153,7 +153,7 @@ def test_refresh_crash_after_backup_is_recovered(inactive, monkeypatch):
     monkeypatch.setattr(codex, "refresh_codex_auth", lambda *a: new)
     with monkeypatch.context() as patch:
         patch.setattr(cs, "_session_write", write_auth)
-        with pytest.raises(OSError):
+        with pytest.raises(codex.SwitchError, match="saved to the backup"):
             switcher._refresh_inactive_auth("1", credentials[0])
     assert switcher._read_account_auth("1") == new
     assert cs.load_document(home / "auth.json") == credentials[0]
@@ -170,3 +170,50 @@ def test_unreadable_default_never_means_inactive(inactive, monkeypatch):
     switcher.auth_file.write_text("garbled")
     monkeypatch.setattr(codex, "refresh_codex_auth", lambda *a: pytest.fail("unknown default"))
     assert switcher._refresh_inactive_auth("1", credentials[0]) is None
+
+
+def test_refreshed_token_kept_when_session_changes_during_refresh(inactive, monkeypatch):
+    switcher, credentials = inactive
+    home = home_for(inactive)
+    foreign = dict(credentials[0], rotation="foreign-writer")
+    new = rotated(credentials[0])
+
+    def refresh(stored):
+        # A writer outside ccswap rotates H while the network request is in flight.
+        write(home / "auth.json", foreign)
+        return new
+
+    monkeypatch.setattr(codex, "refresh_codex_auth", refresh)
+    with pytest.raises(codex.SwitchError, match="saved to the backup"):
+        switcher._refresh_inactive_auth("1", credentials[0])
+    assert switcher._read_account_auth("1") == new
+    assert cs.load_document(home / "auth.json") == foreign
+
+
+def test_usage_survives_session_persistence_failure(inactive, monkeypatch):
+    switcher, credentials = inactive
+    monkeypatch.setattr(switcher, "_refresh_inactive_auth", lambda *a: (_ for _ in ()).throw(
+        cs.SessionError("synthetic")))
+    monkeypatch.setattr(codex, "fetch_codex_usage", lambda *a, **k: (_ for _ in ()).throw(
+        CodexUsageError("expired", status_code=401)))
+    effective = {"auth": credentials[0], "refresh": True, "reason": "", "base_url": "x",
+                 "source": "backup", "custody": "none"}
+    entry = switcher._usage_entry("1", credentials[0], True, 0.0, is_active=False,
+                                  effective=effective)
+    assert entry.last_error
+
+
+def test_next_number_unreadable_sessions_refuses(slots, monkeypatch):
+    switcher, _ = slots
+    sessions = switcher.backup_dir / "codex" / "sessions"
+    sessions.mkdir(parents=True, exist_ok=True)
+    real = type(sessions).iterdir
+
+    def denied(path):
+        if path == sessions:
+            raise PermissionError("synthetic")
+        return real(path)
+
+    monkeypatch.setattr(type(sessions), "iterdir", denied)
+    with pytest.raises(codex.SwitchError, match="slot explicitly"):
+        switcher._next_number(switcher._read_sequence())
