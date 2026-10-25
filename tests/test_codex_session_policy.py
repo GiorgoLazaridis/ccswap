@@ -169,6 +169,7 @@ def test_system_discovery(tmp_path, monkeypatch):
     assert session._system_policy_paths() == [tmp_path / 'OpenAI/Codex' / name for name in
                                              ('config.toml', 'requirements.toml')]
     monkeypatch.setattr(session.sys, "platform", "darwin")
+    monkeypatch.setattr(session.os, "getuid", lambda: 501, raising=False)
     monkeypatch.setitem(sys.modules, "pwd", SimpleNamespace(
         getpwuid=lambda _: SimpleNamespace(pw_name="test-user")))
     assert session._system_policy_paths()[-2:] == [
