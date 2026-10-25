@@ -1061,8 +1061,14 @@ class CodexAccountSwitcher:
         plans: dict[str, str] = {}
 
         for number, account in data["accounts"].items():
-            with FileLock(self.lock_file):
-                effective[number] = self._effective_account_auth(number, allow_refresh=True)
+            try:
+                with FileLock(self.lock_file):
+                    effective[number] = self._effective_account_auth(number, allow_refresh=True)
+            except LockError:
+                # Another ccswap holds the store (e.g. a refresh); report, do not abort.
+                effective[number] = {"auth": None, "source": "unavailable", "custody": "uncertain",
+                                     "refresh": False, "base_url": DEFAULT_CHATGPT_BASE_URL,
+                                     "reason": "Codex account store is busy"}
             auth = effective[number]["auth"]
             entry = self._usage_entry(
                 number, auth, number in eligible, now, is_active=number == active,

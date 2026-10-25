@@ -395,3 +395,24 @@ def test_display_real_read_failures_are_uncertain(usage, monkeypatch, failure):
     # lstat calls per read differ between Python versions; the outcome must not.
     assert reads
     assert status['state'] == 'uncertain' and status['capturePending']
+
+
+def test_snapshot_reports_busy_store_instead_of_failing(usage, monkeypatch):
+    from claude_swap import codex
+    from claude_swap.exceptions import LockError
+
+    switcher, _, _ = usage
+
+    class Busy:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            raise LockError("synthetic busy")
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(codex, "FileLock", Busy)
+    snapshot = switcher.accounts_snapshot(fetch=None)
+    assert all(not account.switchable for account in snapshot.accounts)
