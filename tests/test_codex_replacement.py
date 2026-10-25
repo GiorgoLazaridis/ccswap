@@ -485,3 +485,21 @@ def test_automatic_number_skips_retained_highest_home(slots):
     switcher.add_account(assume_yes=True)
     assert "4" in switcher._read_sequence()["accounts"]
     assert home.exists()
+
+
+def test_documented_conflict_exit_moves_home_and_intent(slots, tmp_path):
+    # docs/codex.md "Resolving a session conflict": both artifacts leave sessions/.
+    switcher, _ = slots
+    home = home_for(slots)
+    intent = intent_for(slots, home, replacement(slots))
+    write(switcher._credential_path("1"), dict(replacement(slots), rotation="third"))
+    with FileLock(switcher.lock_file), pytest.raises(SwitchError, match="conflict"):
+        switcher._guard_session_slot("1")
+    retained = tmp_path / "retained"
+    retained.mkdir()
+    home.rename(retained / home.name)
+    assert cs.slot_custody(switcher, "1").reason == "missing_home"
+    intent.rename(retained / intent.name)
+    assert cs.slot_custody(switcher, "1").state == "none"
+    with FileLock(switcher.lock_file):
+        switcher._guard_session_slot("1")
