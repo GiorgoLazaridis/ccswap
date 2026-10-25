@@ -707,9 +707,9 @@ def test_codex_identity_and_reuse(codex_proc):
     (b"CODEX_HOME=relative\0", "uncertain"),
     (b"CODEX_HOME=\0", "quiescent"),
     (b"CODEX_HOME={home}", "uncertain"),
-    (b"OTHER=x", "uncertain"),
-    (b"broken\0", "uncertain"),
-    (b"", "uncertain"),
+    (b"OTHER=x", "quiescent"),
+    (b"broken\0", "quiescent"),
+    (b"", "quiescent"),
 ])
 def test_codex_environment_bytes(codex_proc, tmp_path, env, expected):
     root, process = codex_proc
@@ -919,10 +919,11 @@ def test_codex_kernel_thread_skipped_before_environment_read(codex_proc, tmp_pat
     with patch.object(Path, "read_bytes", side_effect=AssertionError("kernel environment read")):
         assert detection.scan_codex_home(tmp_path, [], proc_root=root) == {
             "state": "quiescent", "pids": [], "issues": [], "unreadable": 0}
-    # Ordinary root-owned processes still require a readable environment.
+    # An ordinary process with an empty environment is attributed like an unreadable one.
     fields[6] = str(int(fields[6]) & ~0x00200000)
     stat.write_text(prefix + ") " + " ".join(fields))
-    assert detection.scan_codex_home(tmp_path, [], proc_root=root)["state"] == "uncertain"
+    result = detection.scan_codex_home(tmp_path, [], proc_root=root)
+    assert result["state"] == "quiescent" and result["unreadable"] == 1
 
 
 def test_codex_boot_id_read_once_for_scan_and_supervisors(codex_proc, tmp_path, monkeypatch):
@@ -1199,3 +1200,17 @@ def test_codex_unreadable_name_change_between_passes(codex_proc, tmp_path, monke
         PermissionError()) if path.name == "environ" else original(path))
     result = detection.scan_codex_home(tmp_path, [], proc_root=root)
     assert result["state"] == "uncertain"
+
+
+@pytest.mark.parametrize("env", [b"OTHER=x", b"broken\0", b"", b"title rewritten\0\0"])
+def test_codex_garbled_environment_follows_attribution(codex_proc, tmp_path, env):
+    """setproctitle-style environments only count for codex-related processes."""
+    root, process = codex_proc
+    home = tmp_path / "home"
+    home.mkdir()
+    process(42, env=env)
+    result = detection.scan_codex_home(home, [], proc_root=root)
+    assert result["state"] == "quiescent" and result["unreadable"] == 1
+    stat_file = root / "42" / "stat"
+    stat_file.write_text(stat_file.read_text().replace("(shell (worker))", "(codex)"))
+    assert detection.scan_codex_home(home, [], proc_root=root)["state"] == "uncertain"

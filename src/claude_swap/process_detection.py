@@ -461,17 +461,21 @@ def _codex_canonical_path(path: Path) -> Path:
         return path.resolve()
 
 
+def _codex_garbled_env(data: bytes) -> bool:
+    """Programs that rewrite their environ area (setproctitle) leave it unparsable."""
+    return (not data.endswith(b"\0")
+            or any(b"=" not in item for item in data.split(b"\0")[:-1]))
+
+
 def _codex_env_home(data: bytes, home: Path, directory: Path, proc_root: Path) -> tuple:
     issues = []
-    if not data.endswith(b"\0"):
-        issues.append("truncated environment")
     values = []
     for item in data.split(b"\0")[:-1]:
         key, separator, value = item.partition(b"=")
-        if not separator:
-            issues.append("malformed environment")
         if key == b"CODEX_HOME" and separator:
             values.append(value)
+    if not data.endswith(b"\0") and data.rpartition(b"\0")[2].startswith(b"CODEX_HOME"):
+        issues.append("truncated CODEX_HOME")
     if any(value and not os.path.isabs(value) for value in values):
         issues.append("relative CODEX_HOME")
     if any(values):
@@ -533,10 +537,12 @@ def _scan_codex_linux_pid(pid: int, home: Path, proc_root: Path, boot: str) -> t
                 else:
                     if data:
                         result = _codex_env_home(data, home, directory, proc_root)
+                        # Garbled without a match: attribute like an unreadable one.
+                        denied = not result[0] and _codex_garbled_env(data)
                     elif before[1] == "Z":
                         result = (False, _codex_zombie_issues(pid, proc_root, boot))
                     else:
-                        result = (False, ["empty live environment"])
+                        denied = True
             after = _codex_linux_snapshot(pid, proc_root, boot)
             if before[0] != after[0]:
                 continue
@@ -582,7 +588,8 @@ def scan_codex_home(
     be attributed; the Linux supervisor will set PR_SET_CHILD_SUBREAPER.
     Exec after the environ read keeps the environment unless replaced;
     clearing CODEX_HOME via execve takes a process outside this home protocol.
-    Unreadable counts distinct PIDs with denied environments across both passes.
+    Unreadable counts distinct PIDs with denied, empty or garbled environments
+    (e.g. rewritten by setproctitle) across both passes.
     All invocations share one PID namespace; foreign-namespace records are
     out of scope. Never reads run files, manifests or credentials.
     """
