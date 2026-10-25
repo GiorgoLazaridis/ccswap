@@ -4,6 +4,8 @@ import base64
 import copy
 import json
 import os
+import re
+import sys
 from uuid import uuid4
 
 import pytest
@@ -660,7 +662,7 @@ def test_bootstrap_refuses_private_history_on_resume(bootstrap, monkeypatch):
     root, source, home, stage = interrupted_stage(bootstrap, monkeypatch)
     history = stage / "sessions" / "history"
     history.write_text("retained")
-    with pytest.raises(SessionError, match=str(stage)):
+    with pytest.raises(SessionError, match=re.escape(str(stage))):
         codex_session.bootstrap_home(root, source, "1", auth())
     assert history.read_text() == "retained"
     assert not home.exists()
@@ -774,6 +776,7 @@ def test_macos_publish_exclusive_abi(tmp_path, monkeypatch, result):
         assert name == "/usr/lib/libSystem.B.dylib" and use_errno is True
         return SimpleNamespace(renamex_np=rename)
 
+    monkeypatch.setattr(codex_session, "os", SimpleNamespace(name="posix", fsencode=os.fsencode))
     monkeypatch.setattr(codex_session.sys, "platform", "darwin")
     monkeypatch.setattr(codex_session.ctypes, "CDLL", library)
     monkeypatch.setattr(codex_session.ctypes, "get_errno", lambda: 17)
@@ -793,6 +796,7 @@ def test_macos_publish_exclusive_abi(tmp_path, monkeypatch, result):
 def test_publish_missing_primitive_refuses(tmp_path, monkeypatch, platform):
     from types import SimpleNamespace
 
+    monkeypatch.setattr(codex_session, "os", SimpleNamespace(name="posix"))
     monkeypatch.setattr(codex_session.sys, "platform", platform)
     monkeypatch.setattr(codex_session.ctypes, "CDLL", lambda *args, **kwargs: SimpleNamespace())
     with pytest.raises(SessionError):
@@ -857,7 +861,7 @@ def test_bootstrap_foreign_owner_refused(bootstrap, monkeypatch, foreign):
         return info
 
     monkeypatch.setattr(Path, "lstat", foreign_owner)
-    with pytest.raises(SessionError, match=str(stage)):
+    with pytest.raises(SessionError, match=re.escape(str(stage))):
         codex_session.bootstrap_home(root, source, "1", auth())
     assert stage.is_dir() and not home.exists()
 
@@ -878,7 +882,7 @@ def test_bootstrap_allowlist_retains_all_on_conflict(bootstrap, monkeypatch, ent
         path.mkdir()
     else:
         path.write_text("evidence")
-    with pytest.raises(SessionError, match=str(stage)):
+    with pytest.raises(SessionError, match=re.escape(str(stage))):
         codex_session.bootstrap_home(root, source, "1", auth())
     assert os.path.lexists(path) and leftover.exists()
     assert not home.exists()
@@ -1009,6 +1013,13 @@ def sharing(bootstrap):
     return root.resolve(), source.resolve(), home, manifest
 
 
+def assert_link(path, target):
+    if os.name == "nt":
+        assert codex_session._same_link(os.readlink(path), str(target))
+    else:
+        assert os.readlink(path) == str(target)
+
+
 def share(state):
     root, source, home, manifest = state
     result, warnings = codex_session.sync_sharing(
@@ -1037,7 +1048,7 @@ def test_sharing_first_repeat_added_removed_private(sharing):
                                               *codex_session._SHARED_DIRS))
     for name, item in result["sharedItems"].items():
         assert item == {"source": str(source / name), "mode": "symlink"}
-        assert os.readlink(home / name) == str(source / name)
+        assert_link(home / name, source / name)
     assert share((root, source, home, result)) == result
     (source / "AGENTS.md").unlink()
     removed = share((root, source, home, result))
@@ -1079,7 +1090,7 @@ def test_sharing_retargeted_link_refused(sharing, removed):
         (source / "config.toml").unlink()
     with pytest.raises(SessionError):
         share((root, source, home, result))
-    assert os.readlink(destination) == str(source / "foreign")
+    assert_link(destination, source / "foreign")
 
 
 def test_sharing_skills_entries_system_private(sharing):
@@ -1399,9 +1410,10 @@ def test_sharing_os_lstat_denied_nothing_removed(sharing, monkeypatch, target):
     monkeypatch.setattr(os, "lstat", forbidden)
     with pytest.raises(SessionError):
         sharing_call((root, source, home, result))
-    assert os.readlink(home / "config.toml") == str(source / "config.toml")
+    assert_link(home / "config.toml", source / "config.toml")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Backslash cannot be a Windows filename")
 def test_sharing_invalid_skill_warns_before_mutation(sharing, monkeypatch):
     _, source, home, _ = sharing
     (source / "skills").mkdir()
@@ -1459,7 +1471,7 @@ def test_sharing_system_case_and_identity(sharing, monkeypatch, platform):
     skills = source / "skills"
     skills.mkdir()
     (skills / ".system").mkdir()
-    (skills / ".SYSTEM").mkdir()  # Mock case-insensitive interpretation on Linux.
+    (skills / ".SYSTEM").mkdir(exist_ok=os.name == "nt" or sys.platform == "darwin")
     (skills / "alias").symlink_to(skills / ".system")
     (skills / "identity-alias").mkdir()
     samefile = os.path.samefile
@@ -1535,7 +1547,7 @@ def test_sharing_required_link_refuses_before_removal(sharing, kind):
     (source / "config.toml").symlink_to(target)
     with pytest.raises(SessionError):
         sharing_call((root, source, home, result))
-    assert os.readlink(home / "AGENTS.md") == str(source / "AGENTS.md")
+    assert_link(home / "AGENTS.md", source / "AGENTS.md")
 
 
 def test_sharing_nonrecursive_symlink_directory(sharing, monkeypatch):
@@ -1563,3 +1575,101 @@ def test_sharing_skill_link_cycle_skipped(sharing):
     assert result["sharedItems"] == {}
     assert warnings == ["Skipping skill entry: cycle"]
     assert list((home / "skills").iterdir()) == []
+
+
+@pytest.mark.parametrize("left,right,equal", [
+    (r"\\?\C:\Definitions\config.toml", r"c:\definitions\config.toml", True),
+    (r"C:\Definitions\config.toml", r"\\?\c:\definitions\config.toml", True),
+    (r"\\?\C:\Definitions\other.toml", r"C:\Definitions\config.toml", False),
+    (r"\\?\UNC\host\share\file", r"\\host\share\file", False),
+    (r"\\?\Volume{example}\file", r"Volume{example}\file", False),
+    (r"C:config.toml", r"C:\config.toml", False),
+    (r"\config.toml", r"\config.toml", False),
+])
+def test_windows_link_spelling(left, right, equal, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(codex_session, "os", SimpleNamespace(name="nt"))
+    assert codex_session._same_link(left, right) is equal
+
+
+@pytest.mark.parametrize("initial_directory", [False, True])
+def test_sharing_copy_source_type_change(sharing, windows_copy, monkeypatch, initial_directory):
+    root, source, home, _ = sharing
+    (source / "skills").mkdir()
+    source_item = source / "skills" / "changing"
+    destination = home / "skills" / "changing"
+    if initial_directory:
+        source_item.mkdir()
+        (source_item / "item").write_text("old")
+    else:
+        source_item.write_text("old")
+    result, _ = sharing_call(sharing)
+    if initial_directory:
+        (source_item / "item").unlink()
+        source_item.rmdir()
+        source_item.write_text("new")
+    else:
+        source_item.unlink()
+        source_item.mkdir()
+        (source_item / "item").write_text("new")
+    replace = codex_session.replace_with_retry
+
+    def fail_publish(src, dst):
+        if dst == destination:
+            assert not destination.exists()
+            raise OSError(5, "publish interrupted")
+        return replace(src, dst)
+
+    # Fail just once so rollback can restore the existing destination type.
+    failed = False
+
+    def fail_once(src, dst):
+        nonlocal failed
+        if dst == destination and not failed:
+            failed = True
+            return fail_publish(src, dst)
+        return replace(src, dst)
+
+    monkeypatch.setattr(codex_session, "replace_with_retry", fail_once)
+    with pytest.raises(SessionError):
+        sharing_call((root, source, home, result))
+    assert destination.is_dir() == initial_directory
+    old_content = destination / "item" if initial_directory else destination
+    assert old_content.read_text() == "old"
+    sharing_call((root, source, home, result))
+    assert destination.is_dir() != initial_directory
+    new_content = destination if initial_directory else destination / "item"
+    assert new_content.read_text() == "new"
+
+
+@pytest.mark.parametrize("source_removed", [False, True])
+def test_sharing_orphan_old_retained_until_success(sharing, windows_copy, monkeypatch,
+                                                  source_removed):
+    root, source, home, _ = sharing
+    (source / "rules").mkdir()
+    (source / "rules" / "item").write_text("old")
+    result, _ = sharing_call(sharing)
+    orphan = home / ".ccswap-tmp" / ".ccswap-old-crashed"
+    (home / "rules").rename(orphan)
+    (source / "rules" / "item").write_text("new")
+    original = codex_session.shutil.copytree
+
+    def denied(*args, **kwargs):
+        raise PermissionError()
+
+    monkeypatch.setattr(codex_session.shutil, "copytree", denied)
+    with pytest.raises(SessionError):
+        sharing_call((root, source, home, result))
+    assert (orphan / "item").read_text() == "old"
+    assert not (home / "rules").exists()
+    monkeypatch.setattr(codex_session.shutil, "copytree", original)
+    if source_removed:
+        (source / "rules" / "item").unlink()
+        (source / "rules").rmdir()
+    sharing_call((root, source, home, result))
+    assert not orphan.exists()
+    if source_removed:
+        assert not (home / "rules").exists()
+    else:
+        assert (home / "rules" / "item").read_text() == "new"

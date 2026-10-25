@@ -7,6 +7,7 @@ import ctypes
 import errno
 import hashlib
 import json
+import ntpath
 import os
 import re
 import shutil
@@ -525,12 +526,29 @@ def _sharing_copy_owned(path: Path) -> bool:
     return directory
 
 
+def _same_link(left: str, right: str) -> bool:
+    """Compare absolute link spellings without resolving possibly missing targets."""
+    paths = ntpath if os.name == "nt" else os.path
+
+    def normalize(value: str) -> str | None:
+        if os.name == "nt" and value.startswith("\\\\?\\") and re.match(
+                r"[A-Za-z]:[\\/]", value[4:]):
+            value = value[4:]
+        if not paths.isabs(value) or os.name == "nt" and not paths.splitdrive(value)[0]:
+            return None
+        return paths.normcase(paths.normpath(value))
+
+    normalized = normalize(left)
+    return normalized is not None and normalized == normalize(right)
+
+
 def _sharing_destination(path: Path, item: dict[str, Any] | None) -> None:
     if not _sharing_exists(path):
         return
     _require(item is not None)
     if item["mode"] == "symlink":
-        _require(stat.S_ISLNK(path.lstat().st_mode) and os.readlink(path) == item["source"])
+        _require(stat.S_ISLNK(path.lstat().st_mode)
+                 and _same_link(os.readlink(path), item["source"]))
         _owned(path)
     else:
         _sharing_copy_owned(path)
@@ -555,7 +573,8 @@ def _sharing_temporary(home: Path, backup: Path) -> Path:
         _require(entry.name.startswith((".ccswap-new-", ".ccswap-old-")))
         _sharing_copy_owned(entry)
     for entry in leftovers:
-        _remove_shared(entry, dict(mode="copy"))
+        if entry.name.startswith(".ccswap-new-"):
+            _remove_shared(entry, dict(mode="copy"))
     return temporary
 
 
@@ -578,7 +597,8 @@ def _copy_shared(source: Path, destination: Path, source_home: Path, backup: Pat
             atomic_write_bytes(publication, source.read_bytes(), mode=0o600,
                                follow_symlinks=False)
         _sharing_destination(destination, previous)
-        if directory and _sharing_exists(destination):
+        if _sharing_exists(destination) and (
+                directory or stat.S_ISDIR(destination.lstat().st_mode)):
             old = Path(tempfile.mkdtemp(prefix=".ccswap-old-", dir=temporary))
             old.rmdir()
             replace_with_retry(destination, old)
@@ -602,7 +622,8 @@ def sync_sharing(backup_root: Path, home: Path, source_home: Path,
 
     Copies are recorded before writing and refreshed on every call, overwriting
     local edits. Exact absolute symlinks can be adopted after interrupted writes.
-    Only owned staging leftovers are cleaned. A7 accepts path-based checks;
+    Windows copies are derived data. Orphaned old copies survive until all
+    copies are republished or their sources are gone. A7 accepts path-based checks;
     hostile same-uid swaps between validation and mutation are out of scope.
     """
     try:
@@ -706,6 +727,9 @@ def sync_sharing(backup_root: Path, home: Path, source_home: Path,
                 _copy_shared(source, destination, source_home, backup_root, temporary, old)
             _sync_directory(destination.parent)
             save()
+        for entry in temporary.iterdir():
+            if entry.name.startswith(".ccswap-old-"):
+                _remove_shared(entry, dict(mode="copy"))
         return result, warnings
     except (OSError, ValueError, TypeError, RecursionError, RuntimeError, SessionError) as error:
         detail = ""
