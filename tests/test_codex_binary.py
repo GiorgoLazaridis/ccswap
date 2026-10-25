@@ -394,7 +394,8 @@ if sys.argv[3] == 'oversized':
     sys.stdout.flush()
 time.sleep(60)
 ''')
-    monkeypatch.setattr(binary, '_TIMEOUT', 0.5)
+    # Long enough for interpreter startup under a loaded parallel run.
+    monkeypatch.setattr(binary, '_TIMEOUT', 3)
     try:
         with pytest.raises(SessionError):
             binary.probe_codex([sys.executable, str(wrapper), str(child_pid), str(wrapper_pid), failure])
