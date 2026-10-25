@@ -36,8 +36,10 @@ from claude_swap.exceptions import AccountNotFoundError, ConfigError, SwitchErro
 from claude_swap.json_output import USAGE_API_KEY
 from claude_swap.locking import FileLock
 from claude_swap.models import AccountSnapshot, AccountsSnapshot
-from claude_swap.oauth import format_reset
+from claude_swap.oauth import account_headroom, format_reset
 from claude_swap.paths import get_backup_root
+from claude_swap.poll_policy import parse_reset_ts
+from claude_swap.printer import accent, dimmed, warning
 from claude_swap.process_detection import is_codex_running
 from claude_swap.usage_store import SERVE_TTL_S, UsageEntry
 
@@ -442,7 +444,8 @@ class CodexAccountSwitcher:
         return result
 
     def switch(self, strategy: str | None = None, json_output: bool = False) -> dict[str, Any]:
-        del strategy
+        if strategy is not None:
+            return self._switch_with_strategy(strategy, json_output)
         data = self._read_sequence()
         numbers = sorted(data["accounts"], key=int)
         if not numbers:
@@ -459,6 +462,175 @@ class CodexAccountSwitcher:
                 "Every managed Codex account is disabled — re-enable one first"
             )
         return self.switch_to(target, json_output=json_output)
+
+    @staticmethod
+    def _strategy_usage(account: AccountSnapshot) -> dict[str, Any] | None:
+        """Ignore last-good measurements masked by a live usage error."""
+        entry = account.usage
+        if entry.sentinel is None and isinstance(entry.last_good, dict):
+            return entry.last_good
+        return None
+
+    def _select_best(
+        self, current: AccountSnapshot, others: list[AccountSnapshot],
+    ) -> tuple[str | None, str, str]:
+        """Return (target, "", "") only for strictly more headroom.
+
+        Stays return (None, reason, message): usage-unavailable for unknown or
+        incomplete comparisons, candidates-exhausted when all are spent, and
+        already-best when current is provably best (including ties).
+        """
+        headroom = account_headroom(self._strategy_usage(current))
+        if headroom is None:
+            return (
+                None, "usage-unavailable",
+                "Current Codex usage is unavailable; staying put.",
+            )
+        scored = [(account_headroom(self._strategy_usage(a)), a.number) for a in others]
+        known = [(h, n) for h, n in scored if h is not None]
+        if not known:
+            return (
+                None, "usage-unavailable",
+                "No other Codex account has measurable usage; staying put.",
+            )
+        best, target = max(known, key=lambda item: item[0])
+        if best > headroom:
+            return target, "", ""
+        if any(h is None for h, _ in scored):
+            return (
+                None, "usage-unavailable",
+                "Incomplete comparison: some Codex usage is unavailable; staying put.",
+            )
+        if headroom <= 0:
+            return (
+                None, "candidates-exhausted",
+                "All eligible Codex accounts are at their limit; staying put.",
+            )
+        return (
+            None, "already-best",
+            "Current Codex account already has the most headroom; staying put.",
+        )
+
+    def _select_next_available(
+        self, current: AccountSnapshot, others: list[AccountSnapshot],
+    ) -> tuple[str | None, str, str]:
+        """Return (target, "", "") for the next slot not known to be exhausted.
+
+        Stays return (None, reason, message): usage-unavailable without eligible
+        targets, or candidates-exhausted when every other eligible slot is spent.
+        """
+        if not others:
+            return (
+                None, "usage-unavailable",
+                "No other switchable, enabled ChatGPT account is available; staying put.",
+            )
+        after = [a for a in others if int(a.number) > int(current.number)]
+        before = [a for a in others if int(a.number) < int(current.number)]
+        for account in [*after, *before]:
+            headroom = account_headroom(self._strategy_usage(account))
+            if headroom is None or headroom > 0:
+                return account.number, "", ""
+        return (
+            None, "candidates-exhausted",
+            "All other eligible Codex accounts are at their limit; staying put.",
+        )
+
+    def _select_consume_first(
+        self, current: AccountSnapshot, others: list[AccountSnapshot],
+    ) -> tuple[str | None, str, str]:
+        """Return (target, "", "") for quota whose future weekly reset is soonest.
+
+        Current winning returns (None, already-best, message). Without rankable
+        quota, defer to best and its usage-unavailable, candidates-exhausted or
+        already-best stays.
+        """
+        ranked: list[tuple[float, str]] = []
+        now = time.time()
+        for account in [current, *others]:
+            usage = self._strategy_usage(account)
+            headroom = account_headroom(usage)
+            weekly = usage.get("weekly") if usage else None
+            reset = (
+                parse_reset_ts(weekly.get("resets_at"))
+                if isinstance(weekly, dict) else None
+            )
+            # Past resets are stale measurements, not quota about to expire.
+            if headroom is not None and headroom > 0 and reset is not None and reset > now:
+                ranked.append((reset, account.number))
+        if not ranked:
+            return self._select_best(current, others)
+        # min() preserves ties: current first, then the lowest slot.
+        target = min(ranked, key=lambda item: item[0])[1]
+        if target == current.number:
+            return (
+                None, "already-best",
+                "Current Codex account's weekly limit resets soonest; staying put.",
+            )
+        return target, "", ""
+
+    def _switch_with_strategy(self, strategy: str, json_output: bool) -> dict[str, Any]:
+        selectors = {
+            "best": self._select_best,
+            "next-available": self._select_next_available,
+            "consume-first": self._select_consume_first,
+        }
+        if strategy not in selectors:
+            raise ValueError(f"Unknown Codex switch strategy: {strategy}")
+        snapshot = self.accounts_snapshot()
+        accounts = sorted(snapshot.accounts, key=lambda a: int(a.number))
+        current = next((a for a in accounts if a.number == snapshot.active_number), None)
+        # API-key accounts have no subscription quota to compare, as in `codex auto`.
+        others = [
+            a for a in accounts
+            if a.number != snapshot.active_number
+            and a.switchable and not a.disabled and a.kind == "oauth"
+        ]
+        if len(accounts) == 1:
+            selection = (
+                None, "only-one-account", "Only one Codex account is managed; staying put.",
+            )
+        elif current is None or current.kind != "oauth":
+            selection = (
+                None, "usage-unavailable",
+                "No active managed ChatGPT login to compare; staying put.",
+            )
+        else:
+            selection = selectors[strategy](current, others)
+        return self._finish_strategy_switch(current, strategy, selection, json_output)
+
+    def _finish_strategy_switch(
+        self,
+        current: AccountSnapshot | None,
+        strategy: str,
+        selection: tuple[str | None, str, str],
+        json_output: bool,
+    ) -> dict[str, Any]:
+        """Apply the selected target or report a stay without changing the login."""
+        target, reason, message = selection
+        if target is not None:
+            result = self.switch_to(target, json_output=json_output)
+            result["strategy"] = strategy
+            return result
+        active = {
+            "number": int(current.number) if current else None,
+            "email": current.email if current else "",
+        }
+        if not json_output:
+            if reason == "already-best":
+                lead, separator, tail = message.partition(";")
+                print(f"{accent(lead)}{separator}{tail}")
+            elif reason == "candidates-exhausted":
+                warning(message)
+            else:
+                hint = (
+                    " Run 'ccswap codex switch' to rotate."
+                    if reason == "usage-unavailable" else ""
+                )
+                print(dimmed(message + hint))
+        return {
+            "switched": False, "from": active, "to": dict(active),
+            "reason": reason, "strategy": strategy, "message": message,
+        }
 
     @staticmethod
     def _disabled_from_data(data: dict[str, Any], number: str) -> bool:
