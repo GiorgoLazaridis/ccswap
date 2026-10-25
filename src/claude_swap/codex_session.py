@@ -9,15 +9,17 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import stat
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import UUID
 
 from claude_swap.exceptions import SessionError
-from claude_swap.fsutil import atomic_write_text
+from claude_swap.fsutil import atomic_write_bytes, atomic_write_text, replace_with_retry
 from claude_swap.session import slugify_email
 
 
@@ -452,4 +454,263 @@ def bootstrap_home(
             detail = f" ({errno.errorcode.get(error.errno, 'UNKNOWN')})"
         raise SessionError(
             f"Session bootstrap refused{location}{detail}; existing evidence retained."
+        ) from None
+
+
+_SHARED_FILES = ("config.toml", "AGENTS.md", "AGENTS.override.md")
+_SHARED_DIRS = ("rules", "prompts")
+
+
+def _sharing_path(path: Path, source: Path) -> bool:
+    if not path.is_relative_to(source) or path == source:
+        return False
+    parts = path.relative_to(source).parts
+    return (parts[0] in _SHARED_FILES and len(parts) == 1
+            or parts[0] in _SHARED_DIRS
+            or parts[0] == "skills" and len(parts) > 1 and parts[1] != ".system")
+
+
+def _sharing_exists(path: Path) -> bool:
+    try:
+        path.lstat()
+        return True
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+
+
+def _system_skill(path: Path, source: Path) -> bool:
+    system = source / "skills" / ".system"
+    folded = sys.platform in ("darwin", "win32")
+    if path.parent == system.parent and (
+            path.name == ".system" or folded and path.name.casefold() == ".system"):
+        return True
+    resolved = path.resolve(strict=True)
+    if _sharing_exists(system):
+        actual = system.resolve(strict=True)
+        if os.path.samefile(resolved, actual) or resolved.is_relative_to(actual):
+            return True
+        if folded and str(resolved).casefold() == str(actual).casefold():
+            return True
+    return False
+
+
+def _sharing_source(path: Path, source: Path, backup: Path, *, copying: bool = False,
+                    ancestors: frozenset[Path] = frozenset()) -> bool:
+    info = path.lstat()
+    redirected = stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400
+    _require(not copying or not redirected)
+    resolved = path.resolve(strict=True)
+    _require(not resolved.is_relative_to(backup)
+             and (not resolved.is_relative_to(source) or _sharing_path(resolved, source))
+             and resolved.name.casefold() not in ("auth.json", ".credentials.json")
+             and not _system_skill(path, source))
+    directory = stat.S_ISDIR(resolved.stat().st_mode)
+    _require(_ordinary(resolved, directory=directory))
+    if copying and directory:
+        _require(resolved not in ancestors)
+        for child in path.iterdir():
+            _sharing_source(child, source, backup, copying=True, ancestors=ancestors | {resolved})
+    return directory
+
+
+def _sharing_copy_owned(path: Path) -> bool:
+    """Validate the whole copy before any recursive removal or replacement."""
+    info = path.lstat()
+    directory = stat.S_ISDIR(info.st_mode)
+    _require(_ordinary(path, directory=directory))
+    _owned(path)
+    if directory:
+        for child in path.iterdir():
+            _sharing_copy_owned(child)
+    return directory
+
+
+def _sharing_destination(path: Path, item: dict[str, Any] | None) -> None:
+    if not _sharing_exists(path):
+        return
+    _require(item is not None)
+    if item["mode"] == "symlink":
+        _require(stat.S_ISLNK(path.lstat().st_mode) and os.readlink(path) == item["source"])
+        _owned(path)
+    else:
+        _sharing_copy_owned(path)
+
+
+def _remove_shared(path: Path, item: dict[str, Any]) -> None:
+    _sharing_destination(path, item)
+    if not _sharing_exists(path):
+        return
+    if item["mode"] == "copy" and stat.S_ISDIR(path.lstat().st_mode):
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def _sharing_temporary(home: Path, backup: Path) -> Path:
+    temporary = home / ".ccswap-tmp"
+    _private_directory(temporary, backup)
+    _owned(temporary)
+    leftovers = list(temporary.iterdir())
+    for entry in leftovers:
+        _require(entry.name.startswith((".ccswap-new-", ".ccswap-old-")))
+        _sharing_copy_owned(entry)
+    for entry in leftovers:
+        _remove_shared(entry, dict(mode="copy"))
+    return temporary
+
+
+def _copy_shared(source: Path, destination: Path, source_home: Path, backup: Path,
+                 temporary: Path, previous: dict[str, Any]) -> None:
+    directory = _sharing_source(source, source_home, backup, copying=True)
+    _sharing_destination(destination, previous)
+    stage = Path(tempfile.mkdtemp(prefix=".ccswap-new-", dir=temporary))
+    old = None
+    try:
+        if directory:
+            shutil.copytree(source, stage, dirs_exist_ok=True, copy_function=shutil.copyfile)
+            if os.name == "posix":
+                stage.chmod(0o700)
+                for entry in stage.rglob("*"):
+                    entry.chmod(0o700 if entry.is_dir() else 0o600)
+            publication = stage
+        else:
+            publication = stage / "item"
+            atomic_write_bytes(publication, source.read_bytes(), mode=0o600,
+                               follow_symlinks=False)
+        _sharing_destination(destination, previous)
+        if directory and _sharing_exists(destination):
+            old = Path(tempfile.mkdtemp(prefix=".ccswap-old-", dir=temporary))
+            old.rmdir()
+            replace_with_retry(destination, old)
+        try:
+            replace_with_retry(publication, destination)
+        except BaseException:
+            if old is not None and _sharing_exists(old):
+                replace_with_retry(old, destination)
+            raise
+        if old is not None:
+            _remove_shared(old, dict(mode="copy"))
+    finally:
+        if _sharing_exists(stage):
+            _remove_shared(stage, dict(mode="copy"))
+
+
+def sync_sharing(backup_root: Path, home: Path, source_home: Path,
+                 manifest: dict[str, Any], persist: Callable[[dict[str, Any]], None],
+                 ) -> tuple[dict[str, Any], list[str]]:
+    """Refresh under caller-held R/.lock; persist must durably write each receipt.
+
+    Copies are recorded before writing and refreshed on every call, overwriting
+    local edits. Exact absolute symlinks can be adopted after interrupted writes.
+    Only owned staging leftovers are cleaned. A7 accepts path-based checks;
+    hostile same-uid swaps between validation and mutation are out of scope.
+    """
+    try:
+        _require(callable(persist))
+        validate_record(manifest, "manifest")
+        _require(all(_absolute(str(path)) for path in (backup_root, home, source_home)))
+        backup_root = backup_root.resolve(strict=True)
+        source_home = source_home.resolve(strict=True)
+        _checked_parents(home, backup_root)
+        _owned(home)
+        expected = backup_root / "codex" / "sessions" / (
+            manifest["accountNumber"] + "-" + slugify_email(manifest["identity"]["email"]))
+        _require(home == expected and manifest["home"] == str(home)
+                 and manifest["sourceHome"] == str(source_home)
+                 and manifest["bootstrapState"] == "ready")
+        _require(not home.is_relative_to(source_home) and not source_home.is_relative_to(home))
+        _require(_ordinary(source_home, directory=True))
+        _require(_ordinary(home / "skills", directory=True))
+        _owned(home / "skills")
+        previous = manifest["sharedItems"]
+        wanted, warnings = {}, []
+        for name in (*_SHARED_FILES, *_SHARED_DIRS):
+            path = source_home / name
+            if _sharing_exists(path):
+                directory = _sharing_source(path, source_home, backup_root)
+                _require(directory == (name in _SHARED_DIRS))
+                wanted[name] = path
+        skills = source_home / "skills"
+        if _sharing_exists(skills):
+            _require(_ordinary(skills, directory=True))
+            for entry in skills.iterdir():
+                if entry.name == ".system" or (sys.platform in ("darwin", "win32")
+                                               and entry.name.casefold() == ".system"):
+                    continue
+                name = "skills/" + entry.name
+                try:
+                    candidate = dict(manifest, sharedItems={name: dict(
+                        source=str(entry), mode="symlink")})
+                    validate_record(candidate, "manifest")
+                    if _system_skill(entry, source_home):
+                        if entry.name.casefold() != ".system":
+                            warnings.append(f"Skipping skill entry: {entry.name}")
+                        continue
+                    _sharing_source(entry, source_home, backup_root)
+                except (SessionError, FileNotFoundError, NotADirectoryError, RuntimeError):
+                    warnings.append(f"Skipping skill entry: {entry.name}")
+                    continue
+                except OSError as error:
+                    if error.errno != errno.ELOOP:
+                        raise
+                    warnings.append(f"Skipping skill entry: {entry.name}")
+                    continue
+                wanted[name] = entry
+        # Validate every name and destination before any mutation, including staging cleanup.
+        candidate = dict(manifest, sharedItems={name: dict(source=str(path), mode="symlink")
+                                               for name, path in wanted.items()})
+        validate_record(candidate, "manifest")
+        adopted = {}
+        for name in previous.keys() | wanted.keys():
+            old = previous.get(name)
+            _require(not (sys.platform in ("darwin", "win32")
+                          and name.casefold() == "skills/.system"))
+            if old is not None:
+                _require(old["source"] == str(source_home / name))
+            destination = home / name
+            _checked_parents(destination.parent, backup_root)
+            if old is None and name in wanted and _sharing_exists(destination):
+                old = dict(source=str(source_home / name), mode="symlink")
+                adopted[name] = old
+            _sharing_destination(destination, old)
+        temporary = _sharing_temporary(home, backup_root)
+        result = dict(manifest, sharedItems=dict(previous, **adopted))
+
+        def save() -> None:
+            validate_record(result, "manifest")
+            persist(dict(result, sharedItems=dict(result["sharedItems"])))
+
+        for name, old in previous.items():
+            if name not in wanted:
+                _remove_shared(home / name, old)
+                _sync_directory((home / name).parent)
+                del result["sharedItems"][name]
+                save()
+        for name, source in wanted.items():
+            destination = home / name
+            old = result["sharedItems"].get(name)
+            if old is None or old["mode"] != "copy":
+                if not _sharing_exists(destination):
+                    try:
+                        destination.symlink_to(source, target_is_directory=source.is_dir())
+                        old = dict(source=str(source), mode="symlink")
+                    except OSError:
+                        if sys.platform != "win32":
+                            raise
+                        old = dict(source=str(source), mode="copy")
+                else:
+                    old = dict(source=str(source), mode="symlink")
+            result["sharedItems"][name] = old
+            if old["mode"] == "copy":
+                save()  # Write-ahead ownership receipt, including a missing destination.
+                _copy_shared(source, destination, source_home, backup_root, temporary, old)
+            _sync_directory(destination.parent)
+            save()
+        return result, warnings
+    except (OSError, ValueError, TypeError, RecursionError, RuntimeError, SessionError) as error:
+        detail = ""
+        if isinstance(error, OSError):
+            detail = f" ({errno.errorcode.get(error.errno, 'UNKNOWN')})"
+        raise SessionError(
+            f"Session sharing refused{detail}; existing evidence retained."
         ) from None

@@ -999,3 +999,567 @@ def test_windows_publish_and_directory_sync(tmp_path, monkeypatch, denied):
         codex_session._publish_home(stage, home)
     codex_session._sync_directory(tmp_path)  # No Windows directory open/fsync.
     assert calls == [(stage, home)]
+
+
+@pytest.fixture
+def sharing(bootstrap):
+    root, source, home, _ = bootstrap
+    codex_session.bootstrap_home(root, source, "1", auth())
+    manifest = codex_session.load_record(home / ".ccswap-session.json", "manifest")
+    return root.resolve(), source.resolve(), home, manifest
+
+
+def share(state):
+    root, source, home, manifest = state
+    result, warnings = codex_session.sync_sharing(
+        root, home, source, manifest,
+        lambda data: codex_session._session_write(root, home / ".ccswap-session.json", data),
+    )
+    return result
+
+
+def test_sharing_first_repeat_added_removed_private(sharing):
+    root, source, home, original = sharing
+    for name in codex_session._SHARED_FILES:
+        (source / name).write_text(name)
+    for name in codex_session._SHARED_DIRS:
+        (source / name).mkdir()
+        (source / name / "definition").write_text("definition")
+    private = ["auth.json", ".credentials.json", "history.jsonl", "state_5.sqlite",
+               "memories_1.sqlite", "models_cache.json"]
+    for name in private:
+        (source / name).write_text("source-private")
+        if name != "auth.json":
+            (home / name).write_text("home-private")
+    result = share(sharing)
+    assert original["sharedItems"] == {}
+    assert set(result["sharedItems"]) == set((*codex_session._SHARED_FILES,
+                                              *codex_session._SHARED_DIRS))
+    for name, item in result["sharedItems"].items():
+        assert item == {"source": str(source / name), "mode": "symlink"}
+        assert os.readlink(home / name) == str(source / name)
+    assert share((root, source, home, result)) == result
+    (source / "AGENTS.md").unlink()
+    removed = share((root, source, home, result))
+    assert not os.path.lexists(home / "AGENTS.md")
+    assert "AGENTS.md" not in removed["sharedItems"]
+    (source / "AGENTS.md").write_text("added")
+    assert "AGENTS.md" in share((root, source, home, removed))["sharedItems"]
+    assert json.loads((home / "auth.json").read_text()) == auth()
+    assert all((home / name).read_text() == "home-private" for name in private[1:])
+    assert codex_session.load_record(home / ".ccswap-session.json", "manifest")[
+        "sharedItems"] == share((root, source, home, removed))["sharedItems"]
+
+
+@pytest.mark.parametrize("kind", ["file", "directory", "link", "dangling"])
+def test_sharing_unmanaged_conflict(sharing, kind):
+    _, source, home, _ = sharing
+    (source / "rules").mkdir()
+    destination = home / "rules"
+    if kind == "file":
+        destination.write_text("foreign")
+    elif kind == "directory":
+        destination.mkdir()
+    else:
+        destination.symlink_to(source / "missing")
+    with pytest.raises(SessionError):
+        share(sharing)
+    assert os.path.lexists(destination)
+
+
+@pytest.mark.parametrize("removed", [False, True])
+def test_sharing_retargeted_link_refused(sharing, removed):
+    root, source, home, _ = sharing
+    (source / "config.toml").write_text("original")
+    result = share(sharing)
+    destination = home / "config.toml"
+    destination.unlink()
+    destination.symlink_to(source / "foreign")
+    if removed:
+        (source / "config.toml").unlink()
+    with pytest.raises(SessionError):
+        share((root, source, home, result))
+    assert os.readlink(destination) == str(source / "foreign")
+
+
+def test_sharing_skills_entries_system_private(sharing):
+    root, source, home, _ = sharing
+    (source / "skills").mkdir()
+    (source / "skills" / ".system").mkdir()
+    (source / "skills" / ".system" / "source").write_text("private")
+    (source / "skills" / "user").mkdir()
+    (source / "skills" / "single.md").write_text("user")
+    (home / "skills" / ".system").mkdir()
+    (home / "skills" / ".system" / "local").write_text("private")
+    result = share(sharing)
+    assert set(result["sharedItems"]) == {"skills/user", "skills/single.md"}
+    assert not (home / "skills").is_symlink()
+    assert (home / "skills" / ".system" / "local").read_text() == "private"
+    (source / "skills" / "single.md").unlink()
+    assert "skills/single.md" not in share((root, source, home, result))["sharedItems"]
+
+
+@pytest.fixture
+def windows_copy(monkeypatch):
+    from pathlib import Path
+
+    def unavailable(*args, **kwargs):
+        raise OSError(1, "synthetic-sensitive-value")
+
+    monkeypatch.setattr(codex_session.sys, "platform", "win32")
+    monkeypatch.setattr(Path, "symlink_to", unavailable)
+
+
+def test_sharing_windows_refresh_and_remove(sharing, windows_copy):
+    root, source, home, _ = sharing
+    (source / "config.toml").write_bytes(b"first\x00")
+    (source / "rules").mkdir()
+    (source / "rules" / "old").write_text("old")
+    result = share(sharing)
+    assert {item["mode"] for item in result["sharedItems"].values()} == {"copy"}
+    (home / "config.toml").write_text("user edit")
+    (home / "rules" / "local").write_text("user edit")
+    (source / "config.toml").write_bytes(b"second\x00")
+    (source / "rules" / "old").unlink()
+    (source / "rules" / "new").write_text("new")
+    result = share((root, source, home, result))
+    assert (home / "config.toml").read_bytes() == b"second\x00"
+    assert [p.name for p in (home / "rules").iterdir()] == ["new"]
+    (source / "config.toml").unlink()
+    (source / "rules" / "new").unlink()
+    (source / "rules").rmdir()
+    assert share((root, source, home, result))["sharedItems"] == {}
+    assert not (home / "rules").exists() and not (home / "config.toml").exists()
+
+
+@pytest.mark.parametrize("kind", ["safe-link", "credential", "cycle", "runtime"])
+def test_sharing_source_redirections(sharing, monkeypatch, kind):
+    _, source, home, _ = sharing
+    (source / "rules").mkdir()
+    if kind == "safe-link":
+        target = source / "rules" / "ordinary"
+        target.write_text("definition")
+    elif kind == "credential":
+        target = source / "auth.json"
+        target.write_text("private")
+    elif kind == "runtime":
+        target = home / "sessions"
+    else:
+        target = source / "rules"
+    (source / "rules" / "link").symlink_to(target)
+    share(sharing)  # Symlink mode deliberately does not inspect directory contents.
+    (home / "rules").unlink()
+    from pathlib import Path
+    monkeypatch.setattr(codex_session.sys, "platform", "win32")
+    monkeypatch.setattr(Path, "symlink_to", lambda *a, **k: (_ for _ in ()).throw(OSError()))
+    with pytest.raises(SessionError):
+        share(sharing)
+    assert not os.path.lexists(home / "rules")
+
+
+@pytest.mark.parametrize("removed", [False, True])
+def test_sharing_copy_foreign_child_retained(sharing, windows_copy, monkeypatch, removed):
+    from pathlib import Path
+
+    root, source, home, _ = sharing
+    (source / "rules").mkdir()
+    result = share(sharing)
+    monkeypatch.undo()
+    (home / "rules" / "foreign").symlink_to(source / "rules")
+    if removed:
+        (source / "rules").rmdir()
+    with pytest.raises(SessionError):
+        share((root, source, home, result))
+    assert (home / "rules" / "foreign").is_symlink()
+
+
+def test_sharing_copy_failure_preserves_previous(sharing, windows_copy, monkeypatch):
+    root, source, home, _ = sharing
+    (source / "rules").mkdir()
+    (source / "rules" / "item").write_text("old")
+    result = share(sharing)
+    (source / "rules" / "item").write_text("new")
+
+    def denied(*args, **kwargs):
+        raise PermissionError(13, "synthetic-sensitive-value")
+
+    monkeypatch.setattr(codex_session.shutil, "copytree", denied)
+    with pytest.raises(SessionError) as caught:
+        share((root, source, home, result))
+    assert "synthetic-sensitive-value" not in str(caught.value)
+    assert (home / "rules" / "item").read_text() == "old"
+    assert not list(home.glob(".ccswap-sharing-*"))
+
+
+def test_sharing_receipt_wrong_source_refused(sharing):
+    root, source, home, manifest = sharing
+    manifest["sharedItems"]["config.toml"] = dict(source=str(source / "auth.json"), mode="symlink")
+    (home / "config.toml").symlink_to(source / "auth.json")
+    with pytest.raises(SessionError):
+        share(sharing)
+    assert (home / "config.toml").is_symlink()
+
+
+@pytest.mark.parametrize("kind", ["denied", "reparse"])
+def test_sharing_source_unknown_never_absent(sharing, monkeypatch, kind):
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    _, source, home, _ = sharing
+    target = source / "config.toml"
+    target.write_text("definition")
+    original = Path.lstat
+
+    def altered(path, *args, **kwargs):
+        if path == target:
+            if kind == "denied":
+                raise PermissionError(13, "synthetic-sensitive-value")
+            return SimpleNamespace(st_mode=0o100600, st_file_attributes=0x400)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", altered)
+    with pytest.raises(SessionError) as caught:
+        share(sharing)
+    assert "synthetic-sensitive-value" not in str(caught.value)
+    assert not os.path.lexists(home / "config.toml")
+
+
+def test_sharing_posix_symlink_failure_no_copy(sharing, monkeypatch):
+    from pathlib import Path
+
+    _, source, home, _ = sharing
+    (source / "config.toml").write_text("definition")
+    monkeypatch.setattr(codex_session.sys, "platform", "linux")
+
+    def denied(*args, **kwargs):
+        raise PermissionError()
+
+    monkeypatch.setattr(Path, "symlink_to", denied)
+    with pytest.raises(SessionError):
+        share(sharing)
+    assert not (home / "config.toml").exists()
+
+
+def test_sharing_windows_system_case_alias_skipped(sharing, windows_copy):
+    _, source, home, _ = sharing
+    (source / "skills").mkdir()
+    (source / "skills" / ".SYSTEM").mkdir()
+    assert share(sharing)["sharedItems"] == {}
+    assert list((home / "skills").iterdir()) == []
+
+
+def test_sharing_missing_recorded_destination_recreated(sharing):
+    root, source, home, _ = sharing
+    (source / "config.toml").write_text("definition")
+    result = share(sharing)
+    (home / "config.toml").unlink()
+    assert share((root, source, home, result)) == result
+    assert (home / "config.toml").is_symlink()
+
+
+def test_sharing_copy_file_atomic_failure(sharing, windows_copy, monkeypatch):
+    root, source, home, _ = sharing
+    (source / "config.toml").write_text("first")
+    result = share(sharing)
+    (source / "config.toml").write_text("second")
+
+    def denied(*args, **kwargs):
+        raise PermissionError()
+
+    monkeypatch.setattr(codex_session, "atomic_write_bytes", denied)
+    with pytest.raises(SessionError):
+        share((root, source, home, result))
+    assert (home / "config.toml").read_text() == "first"
+
+
+def test_sharing_copy_foreign_owner(sharing, windows_copy, monkeypatch):
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    if os.name != "posix":
+        pytest.skip("POSIX euid ownership")
+    root, source, home, _ = sharing
+    target = home / "config.toml"
+    (source / "config.toml").write_text("definition")
+    result = share(sharing)
+    original = Path.lstat
+
+    def foreign(path, *args, **kwargs):
+        info = original(path, *args, **kwargs)
+        if path == target:
+            return SimpleNamespace(st_mode=info.st_mode, st_uid=os.geteuid() + 1)
+        return info
+
+    monkeypatch.setattr(Path, "lstat", foreign)
+    with pytest.raises(SessionError):
+        share((root, source, home, result))
+    assert target.read_text() == "definition"
+
+
+def sharing_call(state, persist=None):
+    root, source, home, manifest = state
+    if persist is None:
+        persist = lambda data: codex_session._session_write(
+            root, home / ".ccswap-session.json", data)
+    return codex_session.sync_sharing(root, home, source, manifest, persist)
+
+
+@pytest.mark.parametrize("copying", [False, True])
+def test_sharing_failure_second_item_retry(sharing, monkeypatch, copying):
+    from pathlib import Path
+
+    root, source, home, original = sharing
+    for name in ("config.toml", "AGENTS.md"):
+        (source / name).write_text(name)
+    if copying:
+        monkeypatch.setattr(codex_session.sys, "platform", "win32")
+
+        def unavailable(*args, **kwargs):
+            raise OSError()
+
+        monkeypatch.setattr(Path, "symlink_to", unavailable)
+    writes = []
+
+    def persist(data):
+        writes.append(copy.deepcopy(data))
+        # Copies fail after the second write-ahead; symlinks after creation.
+        if "AGENTS.md" in data["sharedItems"]:
+            raise OSError(5, "synthetic-sensitive-value")
+        codex_session._session_write(root, home / ".ccswap-session.json", data)
+
+    with pytest.raises(SessionError):
+        sharing_call(sharing, persist)
+    assert (home / "config.toml").read_text() == "config.toml"
+    receipt = codex_session.load_record(home / ".ccswap-session.json", "manifest")
+    if not copying:
+        assert (home / "AGENTS.md").is_symlink()  # Unrecorded exact link is adopted.
+    result, warnings = sharing_call((root, source, home, receipt))
+    assert not warnings
+    assert set(result["sharedItems"]) == {"config.toml", "AGENTS.md"}
+    assert original["sharedItems"] == {}
+    assert writes[0]["sharedItems"]["config.toml"]["mode"] == (
+        "copy" if copying else "symlink")
+
+
+def test_sharing_copy_write_ahead_and_publish_rollback(sharing, windows_copy, monkeypatch):
+    root, source, home, _ = sharing
+    (source / "rules").mkdir()
+    (source / "rules" / "item").write_text("old")
+    result, _ = sharing_call(sharing)
+    (source / "rules" / "item").write_text("new")
+    replace = codex_session.replace_with_retry
+    events = []
+
+    def interrupted(src, dst):
+        src, dst = codex_session.Path(src), codex_session.Path(dst)
+        assert codex_session.load_record(home / ".ccswap-session.json", "manifest")[
+            "sharedItems"]["rules"]["mode"] == "copy"
+        if src.name.startswith(".ccswap-new-") and dst == home / "rules":
+            assert not dst.exists()
+            old = list((home / ".ccswap-tmp").glob(".ccswap-old-*"))
+            assert len(old) == 1 and (old[0] / "item").read_text() == "old"
+            events.append("publish-failed")
+            raise OSError(5, "interrupted")
+        events.append((src, dst))
+        return replace(src, dst)
+
+    monkeypatch.setattr(codex_session, "replace_with_retry", interrupted)
+    with pytest.raises(SessionError):
+        sharing_call((root, source, home, result))
+    assert "publish-failed" in events
+    assert (home / "rules" / "item").read_text() == "old"
+    monkeypatch.setattr(codex_session, "replace_with_retry", replace)
+    result, _ = sharing_call((root, source, home, result))
+    assert (home / "rules" / "item").read_text() == "new"
+    # Simulate a process crash after moving the old copy, before publication.
+    temporary = home / ".ccswap-tmp"
+    (home / "rules").rename(temporary / ".ccswap-old-crashed")
+    (temporary / ".ccswap-new-crashed").mkdir()
+    (temporary / ".ccswap-new-crashed" / "partial").write_text("partial")
+    sharing_call((root, source, home, result))
+    assert (home / "rules" / "item").read_text() == "new"
+    assert list(temporary.iterdir()) == []
+    assert not list((home / "skills").glob(".ccswap-*"))
+
+
+@pytest.mark.parametrize("target", ["source", "destination"])
+def test_sharing_os_lstat_denied_nothing_removed(sharing, monkeypatch, target):
+    root, source, home, _ = sharing
+    (source / "config.toml").write_text("definition")
+    result, _ = sharing_call(sharing)
+    (source / "config.toml").unlink()
+    denied = (source if target == "source" else home) / "config.toml"
+    lstat = os.lstat
+
+    def forbidden(path, *args, **kwargs):
+        if os.fspath(path) == str(denied):
+            raise PermissionError(13, "synthetic-sensitive-value")
+        return lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", forbidden)
+    with pytest.raises(SessionError):
+        sharing_call((root, source, home, result))
+    assert os.readlink(home / "config.toml") == str(source / "config.toml")
+
+
+def test_sharing_invalid_skill_warns_before_mutation(sharing, monkeypatch):
+    _, source, home, _ = sharing
+    (source / "skills").mkdir()
+    (source / "skills" / "bad\\name").write_text("invalid")
+    (source / "skills" / "valid").write_text("definition")
+    (source / "config.toml").write_text("definition")
+    result, warnings = sharing_call(sharing)
+    assert warnings == ["Skipping skill entry: bad\\name"]
+    assert set(result["sharedItems"]) == {"config.toml", "skills/valid"}
+    assert not (home / "skills" / "bad\\name").exists()
+
+
+@pytest.mark.parametrize("kind", ["external", "dangling", "auth", "credentials", "runtime"])
+def test_sharing_skill_link_policy(sharing, tmp_path, kind):
+    root, source, home, _ = sharing
+    (source / "skills").mkdir()
+    target = tmp_path / "external"
+    if kind == "auth":
+        target = tmp_path / "auth.json"
+    elif kind == "credentials":
+        target = tmp_path / ".credentials.json"
+    elif kind == "runtime":
+        target = source / "sessions"
+    if kind != "dangling":
+        target.mkdir()
+    (source / "skills" / "linked").symlink_to(target)
+    result, warnings = sharing_call(sharing)
+    assert bool(warnings) == (kind != "external")
+    assert ("skills/linked" in result["sharedItems"]) == (kind == "external")
+    assert (home / "skills" / "linked").is_symlink() == (kind == "external")
+
+
+@pytest.mark.parametrize("name", ["config.toml", "rules"])
+@pytest.mark.parametrize("allowed", [False, True])
+def test_sharing_required_external_link_policy(sharing, tmp_path, name, allowed):
+    _, source, home, _ = sharing
+    target = tmp_path / ("definitions" if allowed else "auth.json")
+    if name == "rules":
+        target.mkdir()
+    else:
+        target.write_text("definition")
+    (source / name).symlink_to(target)
+    if allowed:
+        result, warnings = sharing_call(sharing)
+        assert not warnings and name in result["sharedItems"]
+    else:
+        with pytest.raises(SessionError):
+            sharing_call(sharing)
+        assert not os.path.lexists(home / name)
+
+
+@pytest.mark.parametrize("platform", ["darwin", "win32"])
+def test_sharing_system_case_and_identity(sharing, monkeypatch, platform):
+    _, source, home, _ = sharing
+    skills = source / "skills"
+    skills.mkdir()
+    (skills / ".system").mkdir()
+    (skills / ".SYSTEM").mkdir()  # Mock case-insensitive interpretation on Linux.
+    (skills / "alias").symlink_to(skills / ".system")
+    (skills / "identity-alias").mkdir()
+    samefile = os.path.samefile
+
+    def identical(left, right):
+        if codex_session.Path(left) == skills / "identity-alias":
+            return True
+        return samefile(left, right)
+
+    monkeypatch.setattr(codex_session.sys, "platform", platform)
+    monkeypatch.setattr(os.path, "samefile", identical)
+    result, warnings = sharing_call(sharing)
+    assert not result["sharedItems"]
+    assert set(warnings) == {"Skipping skill entry: alias", "Skipping skill entry: identity-alias"}
+    assert list((home / "skills").iterdir()) == []
+
+
+def test_sharing_tmp_foreign_link_retained(sharing):
+    _, source, home, _ = sharing
+    temporary = home / ".ccswap-tmp"
+    temporary.mkdir()
+    (temporary / ".ccswap-new-foreign").symlink_to(source)
+    with pytest.raises(SessionError):
+        sharing_call(sharing)
+    assert (temporary / ".ccswap-new-foreign").is_symlink()
+
+
+def test_sharing_lines_within_budget():
+    from pathlib import Path
+    text = Path(codex_session.__file__).read_text()
+    addition = text[text.index("_SHARED_FILES ="):]
+    assert all(len(line) <= 100 for line in addition.splitlines())
+
+
+def test_sharing_second_copy_interrupted_receipt_durable(sharing, windows_copy, monkeypatch):
+    root, source, home, _ = sharing
+    for name in ("config.toml", "AGENTS.md"):
+        (source / name).write_text(name)
+    original = codex_session._copy_shared
+
+    def interrupted(src, dst, *args):
+        receipt = codex_session.load_record(home / ".ccswap-session.json", "manifest")
+        assert receipt["sharedItems"][src.name]["mode"] == "copy"
+        if src.name == "AGENTS.md":
+            assert not dst.exists()
+            raise OSError(5, "interrupted")
+        return original(src, dst, *args)
+
+    monkeypatch.setattr(codex_session, "_copy_shared", interrupted)
+    with pytest.raises(SessionError):
+        sharing_call(sharing)
+    receipt = codex_session.load_record(home / ".ccswap-session.json", "manifest")
+    assert set(receipt["sharedItems"]) == {"config.toml", "AGENTS.md"}
+    monkeypatch.setattr(codex_session, "_copy_shared", original)
+    sharing_call((root, source, home, receipt))
+    assert (home / "AGENTS.md").read_text() == "AGENTS.md"
+
+
+@pytest.mark.parametrize("kind", ["dangling", "backup", "private-default"])
+def test_sharing_required_link_refuses_before_removal(sharing, kind):
+    root, source, home, _ = sharing
+    (source / "AGENTS.md").write_text("original")
+    result, _ = sharing_call(sharing)
+    (source / "AGENTS.md").unlink()
+    if kind == "dangling":
+        target = source / "missing"
+    elif kind == "backup":
+        target = root / "definition"
+        target.write_text("private")
+    else:
+        target = source / "history.jsonl"
+        target.write_text("private")
+    (source / "config.toml").symlink_to(target)
+    with pytest.raises(SessionError):
+        sharing_call((root, source, home, result))
+    assert os.readlink(home / "AGENTS.md") == str(source / "AGENTS.md")
+
+
+def test_sharing_nonrecursive_symlink_directory(sharing, monkeypatch):
+    from pathlib import Path
+
+    _, source, _, _ = sharing
+    (source / "rules").mkdir()
+    original = Path.iterdir
+
+    def forbidden(path):
+        if path == source / "rules":
+            raise AssertionError("symlink mode must not recurse")
+        return original(path)
+
+    monkeypatch.setattr(Path, "iterdir", forbidden)
+    result, _ = sharing_call(sharing)
+    assert result["sharedItems"]["rules"]["mode"] == "symlink"
+
+
+def test_sharing_skill_link_cycle_skipped(sharing):
+    _, source, home, _ = sharing
+    (source / "skills").mkdir()
+    (source / "skills" / "cycle").symlink_to(source / "skills" / "cycle")
+    result, warnings = sharing_call(sharing)
+    assert result["sharedItems"] == {}
+    assert warnings == ["Skipping skill entry: cycle"]
+    assert list((home / "skills").iterdir()) == []
