@@ -192,8 +192,8 @@ def test_relative_override_uses_child_cd(tmp_path):
     args = ['--cd', str(home), '-c', 'sqlite_home="db"', 'exec', 'prompt']
     assert session.child_argv(args, home, config_layers=[]) == STORES + args
     args = ['--cd', str(tmp_path), '-c', 'sqlite_home="db"', 'resume', '--last']
-    result = session.child_argv(args, home, config_layers=[])
-    assert result[-1] == 'sqlite_home=' + json.dumps(str(home))
+    with pytest.raises(SessionError, match='Relative child path'):
+        session.child_argv(args, home, config_layers=[])
 
 
 def test_relative_sqlite_env_pinned_before_cd(tmp_path, monkeypatch):
@@ -235,7 +235,7 @@ def test_default_log_symlink_escape_refused(tmp_path):
 
 @pytest.mark.parametrize('args', [['prompt', 'login'], ['exec', 'prompt', 'review']])
 def test_ambiguous_subcommand_refused(tmp_path, args):
-    with pytest.raises(SessionError, match=args[-1]):
+    with pytest.raises(SessionError, match='Unexpected child positional'):
         session.child_argv(args, tmp_path, config_layers=[])
 
 
@@ -251,10 +251,13 @@ def test_symlink_loop_refused(tmp_path):
         session.child_env({'CODEX_SQLITE_HOME': str(tmp_path / 'loop')}, tmp_path)
 
 
-@pytest.mark.parametrize('option', ['--image=file.png', '-ifile.png'])
-def test_attached_variadic_images_consume_command_words(tmp_path, option):
-    args = [option, 'exec', 'login', '--search']
-    assert session.child_argv(args, tmp_path, config_layers=[]) == ['--no-daemon'] + STORES + args
+@pytest.mark.parametrize('args', [
+    ['--image=a.png', 'login'], ['-ia.png', 'logout'],
+    ['exec', '--image=a', 'review'], ['exec', '-ia', 'review'],
+])
+def test_attached_images_leave_subcommand_visible(tmp_path, args):
+    with pytest.raises(SessionError, match=args[-1]):
+        session.child_argv(args, tmp_path, config_layers=[])
 
 
 def test_unused_default_log_escape_does_not_replace_private_config(tmp_path):
@@ -263,3 +266,110 @@ def test_unused_default_log_escape_does_not_replace_private_config(tmp_path):
     (home / 'log').symlink_to(tmp_path / 'outside', target_is_directory=True)
     layers = [(home / 'config.toml', {'log_dir': str(home / 'private-log')}, False)]
     assert session.child_argv([], home, config_layers=layers) == ['--no-daemon'] + STORES
+
+
+@pytest.mark.parametrize('key', sorted(session._CHILD_FORBIDDEN))
+def test_nonmanaged_config_routing_refused(tmp_path, key):
+    source = tmp_path / 'shared' / 'config.toml'
+    table = {key: 'synthetic-secret'}
+    with pytest.raises(SessionError) as error:
+        session.child_argv([], tmp_path, config_layers=[(source, table, False)])
+    assert str(source) in str(error.value)
+    assert key in str(error.value)
+    assert 'synthetic-secret' not in str(error.value)
+
+
+def test_managed_keys_are_left_to_policy_gate(tmp_path):
+    layers = [(tmp_path / 'managed.toml', {'forced_login_method': 'chatgpt'}, True)]
+    assert session.child_argv([], tmp_path, config_layers=layers) == ['--no-daemon'] + STORES
+
+
+@pytest.mark.parametrize('args', [
+    ['exec', '--ignore-user-config'], ['exec', 'resume', '--ignore-user-config'],
+])
+def test_ignore_user_config_refused_even_with_private_layer(tmp_path, args):
+    home = tmp_path / 'home'
+    home.mkdir()
+    (home / 'log').symlink_to(tmp_path / 'outside', target_is_directory=True)
+    layers = [(home / 'config.toml', {'log_dir': str(home / 'private')}, False)]
+    with pytest.raises(SessionError, match='--ignore-user-config'):
+        session.child_argv(args, home, config_layers=layers)
+
+
+@pytest.mark.parametrize('form', [['resume'], ['fork'], ['exec', 'resume']])
+@pytest.mark.parametrize('key', ['sqlite_home', 'log_dir'])
+@pytest.mark.parametrize('value', ['private', '../outside'])
+def test_recorded_cwd_relative_path_override_refused(tmp_path, form, key, value):
+    with pytest.raises(SessionError, match='Relative child path'):
+        session.child_argv(form + ['-c', key + '=' + json.dumps(value)],
+                           tmp_path, config_layers=[])
+
+
+@pytest.mark.parametrize('form', [['resume'], ['fork'], ['exec', 'resume']])
+@pytest.mark.parametrize('key', ['sqlite_home', 'log_dir'])
+def test_recorded_cwd_absolute_private_override_preserved(tmp_path, form, key):
+    args = form + ['-c', key + '=' + json.dumps(str(tmp_path / 'private'))]
+    assert session.child_argv(args, tmp_path, config_layers=[]) == (
+        ([] if form[0] == 'exec' else ['--no-daemon']) + STORES + args)
+
+
+@pytest.mark.parametrize('key', sorted(session._CHILD_FORBIDDEN | {'sqlite_home', 'log_dir'}))
+@pytest.mark.parametrize('value', [r'"/private/\x2e\x2e/outside"', 'unquoted/path'])
+def test_sensitive_toml_parse_failure_refused(tmp_path, key, value):
+    with pytest.raises(SessionError) as error:
+        session.child_argv(['-c', key + '=' + value], tmp_path, config_layers=[])
+    assert value not in str(error.value)
+
+
+@pytest.mark.parametrize('word', ['daemon', 'service', 'remote', 'clear-memories'])
+def test_nonexistent_command_names_remain_prompts(tmp_path, word):
+    assert session.child_argv([word], tmp_path, config_layers=[]) == ['--no-daemon'] + STORES + [word]
+
+
+@pytest.mark.parametrize('args', [['hi', 'exec'], ['exec', 'hi', 'resume'], ['hi', 'fork']])
+def test_second_root_positional_is_not_interactive_launch(tmp_path, args):
+    with pytest.raises(SessionError, match='Unexpected child positional'):
+        session.child_argv(args, tmp_path, config_layers=[])
+
+
+@pytest.mark.parametrize('args', [['help'], ['exec', 'help'], ['help', 'login']])
+def test_help_subcommand_refused(tmp_path, args):
+    with pytest.raises(SessionError, match='help'):
+        session.child_argv(args, tmp_path, config_layers=[])
+
+
+def test_space_images_still_consume_command_words(tmp_path):
+    args = ['--image', 'a.png', 'login', 'exec', '--search']
+    assert session.child_argv(args, tmp_path, config_layers=[]) == ['--no-daemon'] + STORES + args
+
+
+@pytest.mark.parametrize('name', [
+    'CODEX_REVOKE_TOKEN_URL_OVERRIDE', 'CODEX_AUTHAPI_BASE_URL',
+    'CODEX_AGENT_IDENTITY_AUTHAPI_BASE_URL', 'CODEX_TUI_RECORD_SESSION',
+    'CODEX_TUI_SESSION_LOG_PATH', 'CODEX_AGENT_IDENTITY_JWKS_BASE_URL',
+    'CODEX_APP_SERVER_LOGIN_ISSUER', 'CODEX_ROLLOUT_TRACE_ROOT',
+    'CODEX_CONNECTORS_TOKEN', 'CODEX_DAEMON_SHUTDOWN_FILE',
+])
+def test_additional_unsafe_env_removed(tmp_path, name):
+    result, warnings = session.child_env({name: 'synthetic-secret'}, tmp_path)
+    assert name not in result
+    assert warnings == [f'Removed {name}.']
+
+
+def test_token_endpoint_keys_are_protected():
+    assert {
+        'openai_base_url', 'chatgpt_base_url', 'model_provider', 'model_providers',
+        'profile', 'profiles', 'experimental_realtime_webrtc_call_base_url',
+        'experimental_realtime_ws_base_url',
+    } <= session._CHILD_FORBIDDEN
+
+
+@pytest.mark.parametrize('key', ['notify', 'otel', 'responses_api_metadata'])
+def test_ordinary_user_settings_do_not_block(tmp_path, key):
+    layer = (tmp_path / 'config.toml', {key: ['synthetic'], 'tui': {'profile': 'x'}}, False)
+    assert session.child_argv([], tmp_path, config_layers=[layer]) == ['--no-daemon'] + STORES
+
+
+def test_command_word_inside_single_prompt_is_unchanged(tmp_path):
+    args = ['hi exec']
+    assert session.child_argv(args, tmp_path, config_layers=[]) == ['--no-daemon'] + STORES + args

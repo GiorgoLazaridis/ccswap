@@ -1192,11 +1192,23 @@ _CHILD_DROP = (
     "OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN",
     "CODEX_REFRESH_TOKEN_URL_OVERRIDE", "CODEX_APP_SERVER_LOGIN_CLIENT_ID",
     "CODEX_EXEC_SERVER_URL",
+    # login/src/auth/{manager.rs:226,personal_access_token.rs:12,agent_identity.rs:29–30}.
+    "CODEX_REVOKE_TOKEN_URL_OVERRIDE", "CODEX_AUTHAPI_BASE_URL",
+    "CODEX_AGENT_IDENTITY_AUTHAPI_BASE_URL", "CODEX_AGENT_IDENTITY_JWKS_BASE_URL",
+    # tui/src/session_log.rs:85–92; rollout-trace/src/thread.rs:44,107.
+    "CODEX_TUI_RECORD_SESSION", "CODEX_TUI_SESSION_LOG_PATH", "CODEX_ROLLOUT_TRACE_ROOT",
+    # app-server/src/request_processors/account_processor.rs:37,628;
+    # codex-mcp/src/mcp/mod.rs:68,617; app-server-transport/src/daemon_shutdown.rs:14–46.
+    "CODEX_APP_SERVER_LOGIN_ISSUER", "CODEX_CONNECTORS_TOKEN", "CODEX_DAEMON_SHUTDOWN_FILE",
 )
 _CHILD_FORBIDDEN = {
     "cli_auth_credentials_store", "mcp_oauth_credentials_store", "model_provider",
     "model_providers", "profile", "profiles", "chatgpt_base_url",
     "experimental_thread_store_endpoint", "forced_login_method", "forced_chatgpt_workspace_id",
+    # Endpoint keys from PROJECT_LOCAL_CONFIG_DENYLIST (config/src/loader/mod.rs:88–102) that
+    # carry account tokens; notify/otel/metadata keys there stay ordinary user settings.
+    "openai_base_url",
+    "experimental_realtime_ws_base_url", "experimental_realtime_webrtc_call_base_url",
 }
 
 
@@ -1256,15 +1268,19 @@ def _child_override(raw: str) -> tuple[str, Any]:
     key, separator, value = raw.partition("=")
     if not separator or not key.strip():
         raise SessionError("Invalid child config override.")
+    key = key.strip()
+    # Codex uses literal dot-separated path components: config/src/overrides.rs:22.
+    root_key = key.split(".")[0]
+    if root_key in _CHILD_FORBIDDEN:
+        raise SessionError("Unsupported child config key: " + root_key)
     # utils/cli/src/config_override.rs:65–94: first '=', TOML sentinel, quote stripping fallback.
     try:
         parsed = tomllib.loads("_x_ = " + value.strip())["_x_"]
     except (tomllib.TOMLDecodeError, KeyError):
+        # Rust toml accepts syntax that tomllib cannot safely interpret.
+        if root_key in {"sqlite_home", "log_dir"}:
+            raise SessionError("Unparsable child path override: " + root_key) from None
         parsed = value.strip().strip("\"'")
-    key = key.strip()
-    # Codex uses literal dot-separated path components, not TOML quoted-key syntax.
-    if key.split(".")[0] in _CHILD_FORBIDDEN:
-        raise SessionError("Unsupported child config key: " + key.split(".")[0])
     return key, parsed
 
 
@@ -1282,7 +1298,7 @@ _CHILD_FLAGS = {
 _CHILD_COMMANDS = set("""agents tcp-tunnel review login logout mcp plugin app-server remote-control
 app completion update doctor sandbox debug execpolicy apply a queue archive delete migrate-rollouts
 migrate-nfs-db unarchive cloud cloud-tasks responses-api-proxy stdio-to-uds features exec-server
-daemon service remote clear-memories""".split())
+help""".split())
 
 
 def _child_parse(args: list[str]) -> tuple[str, list[tuple[str, Any]], Path]:
@@ -1299,7 +1315,7 @@ def _child_parse(args: list[str]) -> tuple[str, list[tuple[str, Any]], Path]:
             if not token.startswith("--") and len(token) > 2:
                 option, value, equal = token[:2], token[2:].lstrip("="), "="
             if option in {"-p", "--profile", "--oss", "--local-provider",
-                          "--remote", "--remote-auth-token-env"}:
+                          "--remote", "--remote-auth-token-env", "--ignore-user-config"}:
                 raise SessionError("Unsupported child option: " + option)
             values = _CHILD_VALUES.copy()
             flags = _CHILD_FLAGS.copy()
@@ -1308,7 +1324,7 @@ def _child_parse(args: list[str]) -> tuple[str, list[tuple[str, Any]], Path]:
             if form.startswith("exec"):
                 values.update({"--thread-source", "--cyber-access-program", "--output-schema",
                                "--color", "--output-last-message", "-o"})
-                flags.update({"--skip-git-repo-check", "--ephemeral", "--ignore-user-config",
+                flags.update({"--skip-git-repo-check", "--ephemeral",
                               "--ignore-rules", "--json", "--experimental-json"})
             if option in values:
                 if not equal:
@@ -1322,7 +1338,7 @@ def _child_parse(args: list[str]) -> tuple[str, list[tuple[str, Any]], Path]:
                     cwd = Path.cwd() / value
                 if option in {"-c", "--config"}:
                     overrides.append(_child_override(value))
-                if option in {"-i", "--image"} and form != "exec resume":
+                if option in {"-i", "--image"} and form != "exec resume" and not equal:
                     while index < len(args) and not args[index].startswith("-"):
                         index += 1
             elif option not in flags or equal:
@@ -1333,12 +1349,23 @@ def _child_parse(args: list[str]) -> tuple[str, list[tuple[str, Any]], Path]:
         elif not positional and form == "exec" and token == "resume":
             form = "exec resume"
         else:
+            # tui/src/cli.rs:17–19 and exec/src/cli.rs:88–92 declare one PROMPT.
+            # Never reinterpret a later command word as an interactive launch.
+            if positional and form in {"interactive", "exec"}:
+                raise SessionError("Unexpected child positional argument.")
             if (form in {"interactive", "exec"}) and (
                 token in _CHILD_COMMANDS or (form == "exec" and token == "fork")
             ):
                 raise SessionError("Unsupported child subcommand: " + token)
             positional = True
     return form, overrides, cwd
+
+
+def _child_config_keys(source: Path, table: dict[str, Any]) -> None:
+    # All forbidden keys are top-level; nested tables may reuse such names harmlessly.
+    for key in table:
+        if key in _CHILD_FORBIDDEN:
+            raise SessionError(f"Unsupported child config key in {source}: {key}")
 
 
 def _child_paths(home: Path, layers: list[tuple[Path, dict[str, Any], bool]],
@@ -1376,6 +1403,16 @@ def child_argv(codex_args: list[str], home: Path, *,
                config_layers: list[tuple[Path, dict[str, Any], bool]]) -> list[str]:
     """Validate supported invocation forms and add root isolation controls."""
     form, overrides, cwd = _child_parse(codex_args)
+    for source, table, managed in config_layers:
+        if not managed:
+            _child_config_keys(source, table)
+    if form in {"resume", "fork", "exec resume"}:
+        # TUI reloads config against recorded cwd; loader/mod.rs:259–267 resolves CLI paths there.
+        for key, value in overrides:
+            if key.split(".")[0] in {"sqlite_home", "log_dir"} and (
+                not isinstance(value, str) or not Path(value).is_absolute()
+            ):
+                raise SessionError("Relative child path override is unsupported for " + form)
     root = [] if form.startswith("exec") else ["--no-daemon"]
     # Global -c reaches exec/resume too: utils/cli/src/config_override.rs:30–36;
     # cli/src/config_override_args.rs:25–39 preserves overrides across scopes.
