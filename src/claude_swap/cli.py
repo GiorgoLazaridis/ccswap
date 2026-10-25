@@ -590,9 +590,21 @@ Examples:
         sys.exit(130)
 
 
+class _CodexRunParser(argparse.ArgumentParser):
+    """Keep wrapper help on stderr and invalid arguments out of diagnostics."""
+
+    def _print_message(self, message, file=None) -> None:
+        super()._print_message(message, sys.stderr)
+
+    def error(self, message) -> None:
+        super().error("Invalid Codex run arguments; wrapper options must precede --.")
+
+
 def _codex_command(argv: list[str]) -> None:
     """Handle ``cswap codex`` account management commands."""
-    parser = argparse.ArgumentParser(
+    is_run = next((arg for arg in argv if not arg.startswith("-")), None) == "run"
+    parser_type = _CodexRunParser if is_run else argparse.ArgumentParser
+    parser = parser_type(
         prog=f"{_prog_name()} codex",
         description=(
             "Manage file-backed Codex CLI accounts. Run 'codex login' for an "
@@ -608,6 +620,12 @@ def _codex_command(argv: list[str]) -> None:
     ):
         command = subcommands.add_parser(name, help=help_text)
         command.add_argument("--json", action="store_true")
+    run = subcommands.add_parser("run", help="Run Codex as a saved account", allow_abbrev=False)
+    run.add_argument("account", nargs="?", metavar="NUM|EMAIL")
+    run.add_argument("--require-session", action="store_true",
+                     help="Refuse the unisolated default-login shortcut")
+    run.add_argument("--shared", action="store_true",
+                     help="Join a live session, accepting refresh-token races")
     add = subcommands.add_parser("add", help="Save the current Codex login")
     add.add_argument("--slot", type=int, metavar="N")
     switch = subcommands.add_parser("switch", help="Switch to the next or named Codex account")
@@ -630,9 +648,23 @@ def _codex_command(argv: list[str]) -> None:
     auto.add_argument("--threshold", type=float, metavar="PCT")
     auto.add_argument("--cooldown", type=float, metavar="SECONDS")
     auto.add_argument("--dry-run", action="store_true", help="Report decisions without switching")
-    args = parser.parse_args(argv)
+    boundary = argv.index("--") if "--" in argv else len(argv)
+    # argparse's delimiter ends option parsing, but still consumes positionals.
+    # Keep the child tail out of both parsing and parser diagnostics.
+    args = parser.parse_args(argv[:boundary] if is_run else argv)
+    codex_args = argv[boundary + 1:]
 
     try:
+        if args.action == "run":
+            from pathlib import Path
+
+            from claude_swap.codex_session import refuse_inherited_home, run_session
+
+            refuse_inherited_home(os.environ)
+            switcher = CodexAccountSwitcher(debug=args.debug)
+            sys.exit(run_session(switcher, args.account, require_session=args.require_session,
+                                 shared=args.shared, codex_args=codex_args,
+                                 env=os.environ, cwd=Path.cwd()))
         switcher = CodexAccountSwitcher(debug=args.debug)
         if args.action == "list":
             switcher.list_accounts(json_output=args.json)
@@ -688,6 +720,11 @@ def _codex_command(argv: list[str]) -> None:
             switcher.switch(json_output=args.json)
     except ClaudeSwitchError as exc:
         error(f"Error: {exc}")
+        sys.exit(1)
+    except OSError:
+        if args.action != "run":
+            raise
+        error("Cannot initialize the Codex run; no new session writer started.")
         sys.exit(1)
 
 

@@ -52,3 +52,13 @@ An account row also carries an additive `alias` field once one is set with `ccsw
 Weekly windows (`sevenDay` and per-model `scoped` entries — never `fiveHour`) additively carry pace fields once the week is ~a day old: `expectedPct` (where usage would sit if spread evenly across the week) and `aheadOfPace` (`true` when meaningfully above that — the same signal the human views show as an `(ahead)`/`(ahead of pace)` marker). `projectedExhaustionAt`/`willLastToReset` extrapolate the current rate into an ETA to 100% and a yes/no "will it last to the reset"; they stay `--json`-only since a linear projection is too rough to present as fact in the UI.
 
 `ccswap auto --json` emits an event *stream* instead — one JSON object per line (`{"schemaVersion":1,"event":"switch","ts":…, …}` with kinds like `poll`, `switch`, `no-switch`, `account-quarantined`, `all-exhausted`, `error`). The contract is additive: new kinds and fields may appear, so scripts should ignore unknown ones.
+
+## Codex session fields
+
+Codex list account rows carry an additive `session` object. This is preserved both in the bare `ccswap codex list --json` / `ccswap list --provider codex --json` payload and under `codex.accounts` in the merged list. `ccswap codex status --json` adds a `sessions` array of `{ "number": N, "session": ... }` for every saved slot, including slots without a session home. Existing active-account fields keep describing the default login.
+
+```json
+{"state": "live", "capturePending": true, "runCount": 1, "shared": false}
+```
+
+`state` is `absent`, `idle`, `live`, `uncertain`, `stale` or `conflict` (priority: conflict, uncertain, live, stale, idle, absent). `capturePending` is true for live/uncertain homes, unapplied committed intents or unadopted session credentials. `runCount` is a nonnegative count of alive supervisors, not a guessed writer-PID count; `shared` is true when an active run opted into sharing. Session fields contain no paths, token claims, fingerprints, environment or prompts. See [Codex session mode](codex.md#session-mode-codex-run) for launch and recovery behavior. `codex run` has no wrapper `--json`; Codex's own JSON arguments belong after `--`.
