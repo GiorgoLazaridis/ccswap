@@ -655,6 +655,8 @@ class TestFormatAge:
 
 @pytest.fixture
 def codex_proc(tmp_path, monkeypatch):
+    if not hasattr(os, "getuid"):
+        pytest.skip("fake /proc needs POSIX uids; the Linux backend is not built for Windows")
     monkeypatch.setattr(detection.sys, "platform", "linux")
     root = tmp_path / "proc"
     boot = root / "sys/kernel/random"
