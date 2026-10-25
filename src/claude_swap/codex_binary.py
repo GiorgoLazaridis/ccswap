@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -45,21 +46,32 @@ def _platform_package(package: Path, arch: str) -> Path | None:
     return None
 
 
-def _windows_arches(env: Mapping[str, str]) -> list[str]:
-    aliases = {"amd64": "x64", "arm64": "arm64", "x86": "x86"}
-    process = aliases.get(env.get("PROCESSOR_ARCHITECTURE", "").casefold())
-    wow = env.get("PROCESSOR_ARCHITEW6432", "").casefold()
-    if wow and wow not in aliases:
+def _node_arch(shim: Path, env: Mapping[str, str]) -> str:
+    # npm's Windows shim prefers node.exe beside itself, then PATH's Node.
+    node = shim.parent / "node.exe"
+    try:
+        node.lstat()
+    except FileNotFoundError:
+        found = shutil.which("node.exe", path=env.get("PATH", ""))
+        if not found:
+            raise SessionError(_LAYOUT)
+        node = Path(found)
+    with node.open("rb") as stream:
+        header = stream.read(64)
+        if len(header) != 64 or header[:2] != b"MZ":
+            raise SessionError(_LAYOUT)
+        offset = int.from_bytes(header[60:64], "little")
+        if not 64 <= offset <= 1024 * 1024:
+            raise SessionError(_LAYOUT)
+        stream.seek(offset)
+        pe = stream.read(6)
+    if len(pe) != 6 or pe[:4] != b"PE\0\0":
         raise SessionError(_LAYOUT)
-    native = aliases.get(wow) or process
-    if process == "arm64" and native != "arm64":
+    machine = int.from_bytes(pe[4:6], "little")
+    arch = {0x8664: "x64", 0xAA64: "arm64"}.get(machine)
+    if arch is None:
         raise SessionError(_LAYOUT)
-    if native == "x64":
-        return ["x64"]
-    if native == "arm64":
-        # Both native and emulated Node installations are plausible on ARM64.
-        return ["arm64", "x64"]
-    raise SessionError(_LAYOUT)
+    return arch
 
 
 def resolve_codex_binary(env: Mapping[str, str]) -> list[str]:
@@ -81,19 +93,14 @@ def resolve_codex_binary(env: Mapping[str, str]) -> list[str]:
         _metadata(package, "@openai/codex")
         if not (package / "bin" / "codex.js").is_file():
             raise SessionError(_LAYOUT)
-        candidates = []
-        for arch in _windows_arches(env):
-            platform = _platform_package(package, arch)
-            root = platform if platform is not None else package
-            executable = root / "vendor" / _TARGETS[arch] / "bin" / "codex.exe"
-            if platform is not None or executable.exists():
-                # A resolved but broken installation is uncertainty, not absence.
-                if not executable.is_file():
-                    raise SessionError(_LAYOUT)
-                candidates.append(executable.resolve(strict=True))
-        if len(candidates) != 1:
+        arch = _node_arch(binary, env)
+        platform = _platform_package(package, arch)
+        root = platform if platform is not None else package
+        executable = root / "vendor" / _TARGETS[arch] / "bin" / "codex.exe"
+        # A resolved but broken installation must never select another arch/root.
+        if not executable.is_file():
             raise SessionError(_LAYOUT)
-        return [str(candidates[0])]
+        return [str(executable.resolve(strict=True))]
     except (OSError, ValueError, TypeError, RuntimeError) as exc:
         raise SessionError(_LAYOUT) from exc
 
@@ -102,6 +109,11 @@ def probe_codex(argv_prefix: list[str]) -> None:
     """Require the supported version and root no-daemon capability in an empty home."""
     if not argv_prefix or any(not isinstance(arg, str) or not arg for arg in argv_prefix):
         raise SessionError("Invalid Codex binary prefix.")
+    # Windows probes run only the resolver's native executable, never Node/shims:
+    # the parser-only --help/--version paths spawn no grandchildren, so kill() suffices.
+    if os.name == "nt" and (len(argv_prefix) != 1 or
+                            Path(argv_prefix[0]).name.casefold() != "codex.exe"):
+        raise SessionError(_LAYOUT)
     try:
         with tempfile.TemporaryDirectory(prefix="ccswap-probe-") as directory:
             env = {key: value for key, value in os.environ.items()
@@ -118,6 +130,16 @@ def probe_codex(argv_prefix: list[str]) -> None:
         raise SessionError("Codex compatibility probe failed.") from exc
 
 
+def _kill_probe(process: subprocess.Popen) -> None:
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
+    except ProcessLookupError:
+        pass  # The whole group/process has already exited.
+
+
 def _probe_output(argv: list[str], env: dict[str, str]) -> bytes:
     # Read pipes incrementally: neither retained output nor a temporary output file
     # can grow without bound. communicate()/run(capture_output=True) cannot do this.
@@ -126,29 +148,34 @@ def _probe_output(argv: list[str], env: dict[str, str]) -> bytes:
     with subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL,
                           # Codex warns on stderr about a temporary home; only stdout is parsed.
                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                          shell=False, bufsize=0) as process:
+                          shell=False, bufsize=0, start_new_session=os.name == "posix") as process:
         def drain() -> None:
             try:
                 while block := process.stdout.read(4096):
                     if len(chunks) + len(block) > _LIMIT:
                         oversized.set()
-                        process.kill()
+                        _kill_probe(process)
                         return
                     chunks.extend(block)
             except OSError:
                 oversized.set()  # An incomplete read cannot prove compatibility.
-                process.kill()
+                _kill_probe(process)
 
         reader = threading.Thread(target=drain, daemon=True)
         reader.start()
         try:
             result = process.wait(timeout=_TIMEOUT)
         except subprocess.TimeoutExpired:
-            process.kill()
+            _kill_probe(process)
             process.wait()
             raise
         finally:
             reader.join(timeout=_TIMEOUT)
-        if reader.is_alive() or oversized.is_set() or result:
+        if reader.is_alive():
+            _kill_probe(process)
+            process.wait()
+            reader.join(timeout=_TIMEOUT)
+            raise SessionError("Codex compatibility probe failed.")
+        if oversized.is_set() or result:
             raise SessionError("Codex compatibility probe failed.")
     return bytes(chunks)
