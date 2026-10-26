@@ -124,3 +124,37 @@ def test_dry_run_reports_a_switch_without_changing_the_active_account(tmp_path):
     assert switcher.switched_to == []
     assert events[-1].kind == "switch"
     assert events[-1].dry_run
+
+
+def test_session_candidate_is_not_switchable(tmp_path):
+    from dataclasses import replace
+
+    switcher = FakeCodexSwitcher(tmp_path, (
+        _account('1', 100, active=True), replace(_account('2', 10), switchable=False),
+    ))
+    events = []
+    engine = CodexAutoSwitchEngine(switcher, AutoSwitchSettings(), events.append)
+    assert engine.tick() is TickOutcome.BLOCKED
+    assert switcher.switched_to == []
+    assert events[-1].reason == 'no-candidates'
+
+
+def test_final_custody_rejection_is_not_retried(tmp_path, monkeypatch):
+    from claude_swap.exceptions import SwitchError
+
+    switcher = FakeCodexSwitcher(tmp_path, (
+        _account('1', 100, active=True), _account('2', 10), _account('3', 20),
+    ))
+    calls = []
+
+    def refuse(number, **_):
+        calls.append(number)
+        raise SwitchError('session live')
+
+    monkeypatch.setattr(switcher, 'switch_to', refuse)
+    events = []
+    engine = CodexAutoSwitchEngine(switcher, AutoSwitchSettings(), events.append)
+    assert engine.tick() is TickOutcome.ERROR
+    assert calls == ['2']
+    assert events[-1].kind == 'error'
+    assert not engine.state_path.exists()

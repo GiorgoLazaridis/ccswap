@@ -47,6 +47,8 @@ You usually don't need to restart Claude Code after a switch. Codex always needs
 
 **Two accounts at once.** `ccswap run 2` launches Claude Code as account 2 in this terminal only. `ccswap map 2 ~/work` makes a bare `ccswap run` pick account 2 in that folder. [Session mode](https://github.com/errhythm/ccswap/blob/main/docs/session-mode.md)
 
+**Codex sessions.** `ccswap codex run 2` launches an account in a private home; the default login runs plain Codex. [Codex session mode](https://github.com/errhythm/ccswap/blob/main/docs/codex.md#session-mode-codex-run)
+
 **Codex.** `ccswap codex list`, `codex switch` and `codex auto` mirror the Claude commands. Codex must use its file credential store. [Codex accounts](https://github.com/errhythm/ccswap/blob/main/docs/codex.md)
 
 **Dashboard and menu bar.** Run `ccswap` for the dashboard, or `ccswap watch` for the live monitor above. On macOS, `ccswap menubar --install-service` keeps a menu bar app running at login. [Dashboard and menu bar](https://github.com/errhythm/ccswap/blob/main/docs/dashboard.md)
