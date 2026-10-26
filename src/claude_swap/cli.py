@@ -613,6 +613,17 @@ def _codex_command(argv: list[str]) -> None:
     switch = subcommands.add_parser("switch", help="Switch to the next or named Codex account")
     switch.add_argument("account", nargs="?", metavar="NUM|EMAIL")
     switch.add_argument("--json", action="store_true")
+    switch.add_argument(
+        "--strategy",
+        choices=["best", "next-available", "consume-first"],
+        help=(
+            "With bare 'switch': pick the Codex target by remaining 5h/Weekly quota. "
+            "'best' jumps to the account with the most headroom; "
+            "'next-available' rotates to the next account, skipping any at their limit; "
+            "'consume-first' jumps to the account with headroom whose weekly "
+            "window resets soonest, so no quota is lost at a reset"
+        ),
+    )
     remove = subcommands.add_parser("remove", help="Remove a saved Codex account")
     remove.add_argument("account", metavar="NUM|EMAIL")
     remove.add_argument("--yes", action="store_true", help="Skip confirmation")
@@ -631,6 +642,8 @@ def _codex_command(argv: list[str]) -> None:
     auto.add_argument("--cooldown", type=float, metavar="SECONDS")
     auto.add_argument("--dry-run", action="store_true", help="Report decisions without switching")
     args = parser.parse_args(argv)
+    if args.action == "switch" and args.account and args.strategy:
+        parser.error("--strategy can only be used with bare 'switch'")
 
     try:
         switcher = CodexAccountSwitcher(debug=args.debug)
@@ -685,7 +698,7 @@ def _codex_command(argv: list[str]) -> None:
         elif args.account:
             switcher.switch_to(args.account, json_output=args.json)
         else:
-            switcher.switch(json_output=args.json)
+            switcher.switch(strategy=args.strategy, json_output=args.json)
     except ClaudeSwitchError as exc:
         error(f"Error: {exc}")
         sys.exit(1)
@@ -1327,6 +1340,7 @@ Aliases: ls=list  rm=remove  update=upgrade""",
   %(prog)s auto --once                       # single auto-switch tick (cron-friendly)
   %(prog)s config set autoswitch.threshold 80
   %(prog)s codex switch 2                    # switch the file-backed Codex login
+  %(prog)s codex switch --strategy best      # pick Codex quota headroom
 
 The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep working.
         """,

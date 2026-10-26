@@ -983,6 +983,25 @@ class TestSubcommandAliases:
             "2", json_output=True
         )
 
+    @pytest.mark.parametrize("strategy", ["best", "next-available", "consume-first"])
+    def test_codex_switch_strategy_dispatch(self, strategy):
+        argv = ["ccswap", "codex", "switch", "--strategy", strategy, "--json"]
+        with patch("claude_swap.cli.CodexAccountSwitcher") as switcher_cls, \
+             patch.object(sys, "argv", argv):
+            cli.main()
+        switcher_cls.return_value.switch.assert_called_once_with(
+            strategy=strategy, json_output=True
+        )
+
+    def test_codex_switch_strategy_rejects_explicit_account(self, capsys):
+        with patch("claude_swap.cli.CodexAccountSwitcher") as switcher_cls, \
+             patch.object(sys, "argv", ["ccswap", "codex", "switch", "2", "--strategy", "best"]):
+            with pytest.raises(SystemExit) as exc:
+                cli.main()
+        assert exc.value.code == 2
+        assert "--strategy can only be used with bare 'switch'" in capsys.readouterr().err
+        switcher_cls.assert_not_called()
+
     def test_codex_usage_subcommand_dispatches_to_codex_provider(self):
         with patch("claude_swap.cli.CodexAccountSwitcher") as switcher_cls, \
              patch.object(sys, "argv", ["ccswap", "codex", "usage", "--json"]):
