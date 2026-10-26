@@ -1771,7 +1771,11 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
     if args.json and payload is not None:
         print(json.dumps(payload, indent=2))
 
-    if switched_from is not None and not args.json:
+    if (
+        switched_from is not None
+        and not args.json
+        and load_ui_settings(paths.get_backup_root()).star_prompt
+    ):
         from claude_swap.star_prompt import maybe_ask
 
         maybe_ask(switcher, str(switched_from))
