@@ -126,7 +126,8 @@ def test_root_debug_and_main_predispatch(launch, monkeypatch, flag):
     assert launch[1].call_args.kwargs["codex_args"] == ["--json"]
 
 
-@pytest.mark.parametrize("argv", [["codex", "run"], ["codex", "--debug", "run", "2"], ["codex", "--deb", "run", "2"],
+@pytest.mark.parametrize("argv",
+    [["codex", "run"], ["codex", "--debug", "run", "2"], ["codex", "--deb", "run", "2"],
                                   ["codex", "--debug", "--debug", "run", "2", "--", "prompt"]])
 def test_no_terminal_probe_before_codex_run(argv):
     assert not cli_should_probe(argv, colors_enabled=True)
@@ -134,7 +135,8 @@ def test_no_terminal_probe_before_codex_run(argv):
 
 def test_existing_remove_delimiter_unchanged(launch):
     cli._codex_command(["remove", "--", "-email@example.org"])
-    launch[0].return_value.remove_account.assert_called_once_with("-email@example.org", assume_yes=False)
+    launch[0].return_value.remove_account.assert_called_once_with("-email@example.org",
+        assume_yes=False)
     launch[1].assert_not_called()
 
 
@@ -156,7 +158,8 @@ def test_real_session_json_through_cli(custody, monkeypatch, capsys, command):
     monkeypatch.setattr(cli, "CodexAccountSwitcher", lambda **kw: switcher)
     monkeypatch.setattr(switcher, "current_account_number", lambda: None)
     monkeypatch.setattr(switcher, "_account_plan", lambda *a: "plus")
-    monkeypatch.setattr(codex_session, "slot_custody", lambda *a: codex_session.Custody("uncertain", "fake"))
+    monkeypatch.setattr(codex_session, "slot_custody",
+        lambda *a: codex_session.Custody("uncertain", "fake"))
     cli._codex_command([command, "--json"])
     payload = json.loads(capsys.readouterr().out)
     rows = payload["accounts" if command == "list" else "sessions"]

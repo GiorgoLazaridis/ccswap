@@ -177,7 +177,8 @@ def test_symlink_escape(tmp_path):
     expected = 'sqlite_home=' + json.dumps(str(home.resolve()))
     assert session.child_argv([], home, config_layers=layers)[-1] == expected
     with pytest.raises(SessionError):
-        session.child_argv([], home, config_layers=[(home / 'config.toml', {'log_dir': value}, True)])
+        session.child_argv([], home,
+            config_layers=[(home / 'config.toml', {'log_dir': value}, True)])
 
 
 @pytest.mark.parametrize('raw', ['sqlite_home={x=1}', 'log_dir=false', 'sqlite_home.child="x"'])
@@ -227,7 +228,9 @@ def test_home_expansion_refused_without_home_lookup(tmp_path, where):
         else:
             args = {'config': [], 'override': ['-c', 'sqlite_home="~/db"'],
                     'cd': ['--cd=~/project']}[where]
-            layers = [(tmp_path / 'config.toml', {'sqlite_home': '~/db'}, False)] if where == 'config' else []
+            layers = [
+                (tmp_path / 'config.toml', {'sqlite_home': '~/db'},
+                    False)] if where == 'config' else []
             session.child_argv(args, tmp_path, config_layers=layers)
 
 
@@ -250,7 +253,8 @@ def test_ambiguous_subcommand_refused(tmp_path, args):
 def test_managed_escape_not_hidden_by_runtime_override(tmp_path):
     layers = [(tmp_path / 'config.toml', {'sqlite_home': '/outside'}, True)]
     with pytest.raises(SessionError, match='Managed'):
-        session.child_argv(['-c', 'sqlite_home=' + json.dumps(str(tmp_path))], tmp_path, config_layers=layers)
+        session.child_argv(['-c', 'sqlite_home=' + json.dumps(str(tmp_path))], tmp_path,
+            config_layers=layers)
 
 
 def test_symlink_loop_refused(tmp_path):
@@ -331,7 +335,8 @@ def test_sensitive_toml_parse_failure_refused(tmp_path, key, value):
 
 @pytest.mark.parametrize('word', ['daemon', 'service', 'remote', 'clear-memories'])
 def test_nonexistent_command_names_remain_prompts(tmp_path, word):
-    assert session.child_argv([word], tmp_path, config_layers=[]) == ['--no-daemon'] + STORES + [word]
+    assert session.child_argv([word], tmp_path, config_layers=[]) == [
+        '--no-daemon'] + STORES + [word]
 
 
 @pytest.mark.parametrize('args', [['hi', 'exec'], ['exec', 'hi', 'resume'], ['hi', 'fork']])

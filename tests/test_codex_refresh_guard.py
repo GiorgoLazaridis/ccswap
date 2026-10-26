@@ -121,7 +121,8 @@ def test_refresh_success_persists_authority_and_invalidates_cache(inactive, monk
     if session:
         assert cs.load_document(session / "auth.json") == new
         manifest = cs.load_record(session / ".ccswap-session.json", "manifest")
-        assert manifest["lineage"] == [cs.auth_fingerprint(credentials[0]), cs.auth_fingerprint(new)]
+        assert manifest["lineage"] == [cs.auth_fingerprint(credentials[0]),
+            cs.auth_fingerprint(new)]
         assert not (session.parent / f".{session.name}.stale.json").exists()
 
 

@@ -149,7 +149,8 @@ def test_add_replaces_same_user_login(slots, owner):
     switcher.add_account(slot=1, assume_yes=True)
     assert switcher._read_account_auth("1") == new
     assert cs.load_document(home / "auth.json") == new
-    assert cs.load_record(home / ".ccswap-session.json", "manifest")["identity"] == cs.extract_identity(new)[0]
+    assert cs.load_record(home / ".ccswap-session.json", "manifest")[
+        "identity"] == cs.extract_identity(new)[0]
 
 
 def test_different_occupant_retained(slots):

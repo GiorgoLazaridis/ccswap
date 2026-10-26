@@ -43,7 +43,8 @@ def installation(tmp_path, monkeypatch):
     metadata(package)
     touch(package / 'bin' / 'codex.js')
     monkeypatch.setattr(binary, 'os', SimpleNamespace(name='nt'))
-    monkeypatch.setattr(binary.shutil, 'which', lambda name, path: str(shim) if name == 'codex' else None)
+    monkeypatch.setattr(binary.shutil, 'which', lambda name,
+        path: str(shim) if name == 'codex' else None)
     return shim, package
 
 
@@ -59,7 +60,8 @@ def platform(package, arch='x64', where='hoisted', executable=True):
 
 
 def resolve(**env):
-    return binary.resolve_codex_binary({'PATH': 'synthetic', 'PROCESSOR_ARCHITECTURE': 'AMD64', **env})
+    return binary.resolve_codex_binary(
+        {'PATH': 'synthetic', 'PROCESSOR_ARCHITECTURE': 'AMD64', **env})
 
 
 @pytest.mark.parametrize('where', ['hoisted', 'nested', 'bin'])
@@ -111,11 +113,13 @@ def test_wrong_metadata(installation, name, version):
         resolve()
 
 
-@pytest.mark.parametrize('failure', ['layout', 'missing-js', 'no-binary', 'bad-json', 'node-missing', 'denied'])
+@pytest.mark.parametrize('failure',
+    ['layout', 'missing-js', 'no-binary', 'bad-json', 'node-missing', 'denied'])
 def test_unsupported(installation, monkeypatch, failure):
     shim, package = installation
     if failure == 'layout':
-        monkeypatch.setattr(binary.shutil, 'which', lambda *a, **kw: str(touch(shim.with_suffix('.js'))))
+        monkeypatch.setattr(binary.shutil, 'which', lambda *a,
+            **kw: str(touch(shim.with_suffix('.js'))))
     elif failure == 'missing-js':
         (package / 'bin/codex.js').unlink()
     elif failure == 'node-missing':
@@ -123,7 +127,8 @@ def test_unsupported(installation, monkeypatch, failure):
     elif failure == 'bad-json':
         (package / 'package.json').write_text('{')
     elif failure == 'denied':
-        monkeypatch.setattr(binary, '_metadata', lambda *a: (_ for _ in ()).throw(PermissionError()))
+        monkeypatch.setattr(binary, '_metadata',
+            lambda *a: (_ for _ in ()).throw(PermissionError()))
     with pytest.raises(SessionError):
         resolve()
 
@@ -133,7 +138,8 @@ def test_direct(tmp_path, monkeypatch, windows):
     executable = touch(tmp_path / ('codex.exe' if windows else 'codex'))
     seen = []
     monkeypatch.setattr(binary, 'os', SimpleNamespace(name='nt' if windows else 'posix'))
-    monkeypatch.setattr(binary.shutil, 'which', lambda name, path: seen.append((name, path)) or str(executable))
+    monkeypatch.setattr(binary.shutil, 'which', lambda name,
+        path: seen.append((name, path)) or str(executable))
     assert resolve() == [str(executable.resolve())]
     assert seen == [('codex', 'synthetic')]
 
@@ -189,9 +195,11 @@ def test_probe_isolation(monkeypatch):
         assert argv[0] == '/native path/codex'
         assert contents == []
         assert kwargs == dict(env={'PATH': 'synthetic', 'SYSTEMROOT': 'win', 'TEMP': 'temp',
-                                   'HOME': str(home), 'USERPROFILE': str(home), 'CODEX_HOME': str(home)},
+                                   'HOME': str(home), 'USERPROFILE': str(home),
+                                       'CODEX_HOME': str(home)},
                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                              stderr=subprocess.DEVNULL, shell=False, bufsize=0, start_new_session=True)
+                              stderr=subprocess.DEVNULL, shell=False, bufsize=0,
+                                  start_new_session=True)
         assert not home.exists()
     assert calls[0][0][-1] == '--version'
     assert calls[1][0][-1] == '--help'
@@ -217,9 +225,11 @@ def test_capability_refused(monkeypatch, help_output):
 @pytest.mark.parametrize('failure', ['timeout', 'exit', 'oversized', 'spawn'])
 def test_probe_failure(monkeypatch, failure):
     if failure == 'spawn':
-        monkeypatch.setattr(binary.subprocess, 'Popen', lambda *a, **kw: (_ for _ in ()).throw(OSError('synthetic-secret')))
+        monkeypatch.setattr(binary.subprocess, 'Popen', lambda *a,
+            **kw: (_ for _ in ()).throw(OSError('synthetic-secret')))
     else:
-        calls = fake_probe(monkeypatch, [b'x' * (binary._LIMIT + 1) if failure == 'oversized' else b''],
+        calls = fake_probe(monkeypatch,
+            [b'x' * (binary._LIMIT + 1) if failure == 'oversized' else b''],
                            timeout=failure == 'timeout', result=1 if failure == 'exit' else 0)
     with pytest.raises(SessionError) as error:
         binary.probe_codex(['codex.exe'])
@@ -278,7 +288,8 @@ else:
             binary.probe_codex([sys.executable, str(script), scenario])
 
 
-@pytest.mark.parametrize('damage', ['unknown', 'mz', 'short', 'pe', 'offset-low', 'offset-high', 'truncated'])
+@pytest.mark.parametrize('damage',
+    ['unknown', 'mz', 'short', 'pe', 'offset-low', 'offset-high', 'truncated'])
 def test_invalid_node_pe(installation, damage):
     shim, package = installation
     platform(package)
@@ -400,7 +411,8 @@ time.sleep(60)
     monkeypatch.setattr(binary, '_TIMEOUT', 3)
     try:
         with pytest.raises(SessionError):
-            binary.probe_codex([sys.executable, str(wrapper), str(child_pid), str(wrapper_pid), failure])
+            binary.probe_codex(
+                [sys.executable, str(wrapper), str(child_pid), str(wrapper_pid), failure])
         assert child_pid.exists(), 'Wrapper must spawn the child before timeout'
         pid = int(child_pid.read_text())
         # A killed orphan may remain a zombie until PID 1 reaps it; it cannot run.

@@ -113,8 +113,10 @@ def test_default_and_omitted(run, capsys, require, expected):
 def test_custody_refusal_and_shared_join(run, monkeypatch, capsys, state, shared, expected):
     run.before = state
     if shared and state == "live":
-        monkeypatch.setattr(run.switcher, "_guard_session_slot", lambda n: pytest.fail("reconcile on join"))
-        monkeypatch.setattr(cs, "reconcile_session", lambda *a, **kw: cs.ReconcileResult("unchanged")
+        monkeypatch.setattr(run.switcher, "_guard_session_slot",
+            lambda n: pytest.fail("reconcile on join"))
+        monkeypatch.setattr(cs, "reconcile_session", lambda *a,
+            **kw: cs.ReconcileResult("unchanged")
                             if run.spawned else pytest.fail("reconcile on join"))
     assert run.invoke(shared=shared) == expected
     assert bool(run.spawned) == (expected == 0)
@@ -175,7 +177,8 @@ def test_new_home_bootstrap(run, monkeypatch):
     # The fake process's record observer follows the new home through this reference.
     monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: _new_process(run))
     assert run.invoke("2") == 0
-    assert cs.load_record(run.home / ".ccswap-session.json", "manifest")["bootstrapState"] == "ready"
+    assert cs.load_record(run.home / ".ccswap-session.json", "manifest")[
+        "bootstrapState"] == "ready"
 
 
 def _new_process(run):
@@ -303,7 +306,8 @@ def test_child_cwd_drives_discovery(run):
 
 def test_unknown_supervisor_identity_before_record(run, monkeypatch):
     from claude_swap.exceptions import SessionError
-    monkeypatch.setattr(cs, "_run_identity", lambda pid: (_ for _ in ()).throw(SessionError("unknown")))
+    monkeypatch.setattr(cs, "_run_identity",
+        lambda pid: (_ for _ in ()).throw(SessionError("unknown")))
     assert run.invoke() == 1
     assert not run.spawned and not (run.home / "runs").exists()
 
@@ -336,7 +340,8 @@ def test_subreaper_failure_before_record(run, monkeypatch):
 def test_windows_job_callback_and_wait(run, monkeypatch):
     from claude_swap import windows_job
     events = []
-    monkeypatch.setattr(cs, "sys", SimpleNamespace(platform="win32", stderr=__import__("sys").stderr))
+    monkeypatch.setattr(cs, "sys",
+        SimpleNamespace(platform="win32", stderr=__import__("sys").stderr))
     monkeypatch.setattr(cs, "_windows_requirements_path", lambda: None)
     monkeypatch.setattr(cs, "_run_identity", lambda pid: {
         "pid": pid, "start": {"kind": "windows", "creationTime100ns": "1"}})
@@ -432,7 +437,8 @@ def test_linux_subreaper_prctl(monkeypatch, result):
     from claude_swap.exceptions import SessionError
     calls = []
     # Retrieve the implementation, rather than the run fixture's injected seam.
-    monkeypatch.setattr(cs, "sys", SimpleNamespace(platform="linux", stderr=__import__("sys").stderr))
+    monkeypatch.setattr(cs, "sys",
+        SimpleNamespace(platform="linux", stderr=__import__("sys").stderr))
     def prctl(*args):
         calls.append(args)
         return result

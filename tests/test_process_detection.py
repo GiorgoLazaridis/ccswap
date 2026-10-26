@@ -674,7 +674,8 @@ def codex_proc(tmp_path, monkeypatch):
         if not (directory / "ns/mnt").is_symlink():
             (directory / "ns/mnt").symlink_to("mnt:[1]")
         (directory / "task" / str(pid)).mkdir(parents=True, exist_ok=True)
-        (directory / "stat").write_text(STAT.replace("4242 (claude) S", f"{pid} (shell (worker)) {state}")
+        (directory / "stat").write_text(
+            STAT.replace("4242 (claude) S", f"{pid} (shell (worker)) {state}")
                                          .replace(TICKS, ticks))
         (directory / "environ").write_bytes(env)
         uid = os.getuid() if uid is None else uid
@@ -688,7 +689,8 @@ def test_codex_identity_and_reuse(codex_proc):
     root, process = codex_proc
     directory = process()
     start = detection.codex_process_identity(42, root)
-    assert start == {"kind": "linux", "bootId": "12345678-1234-1234-1234-123456789abc", "ticks": TICKS}
+    assert start == {"kind": "linux", "bootId": "12345678-1234-1234-1234-123456789abc",
+        "ticks": TICKS}
     assert detection.codex_process_state(42, start, root) == "alive"
     process(ticks="999")
     assert detection.codex_process_state(42, start, root) == "gone"
@@ -760,7 +762,8 @@ def test_codex_unavailable_data_is_uncertain(codex_proc, tmp_path, monkeypatch, 
 
     monkeypatch.setattr(Path, "open", denied)
     result = detection.scan_codex_home(tmp_path, [], proc_root=root)
-    assert result["state"] == ("quiescent" if filename == "environ" and failure is PermissionError else "uncertain")
+    assert result["state"] == (
+        "quiescent" if filename == "environ" and failure is PermissionError else "uncertain")
     assert "sensitive" not in str(result)
     assert detection.codex_process_state(42, {}, root) in ("gone", "unknown")
 
@@ -970,7 +973,8 @@ def test_codex_non_utf8_comm_and_status(codex_proc, tmp_path):
     assert detection.scan_codex_home(tmp_path, [], proc_root=root)["state"] == "live"
 
 
-@pytest.mark.parametrize("kind", ["unrelated", "codex", "ancestor", "supervisor", "cycle", "missing"])
+@pytest.mark.parametrize("kind",
+    ["unrelated", "codex", "ancestor", "supervisor", "cycle", "missing"])
 @pytest.mark.parametrize("error_number", [1, 13])
 def test_codex_denied_environ_attribution(codex_proc, tmp_path, monkeypatch, kind, error_number):
     root, process = codex_proc
@@ -1131,7 +1135,8 @@ def test_codex_zombie_leader_threads(codex_proc, tmp_path, thread_state, expecte
     leader.write_bytes((directory / "stat").read_bytes())
     thread = directory / "task/43"
     thread.mkdir()
-    thread.joinpath("stat").write_text(STAT.replace("4242 (claude) S", f"43 (worker) {thread_state}"))
+    thread.joinpath("stat").write_text(
+        STAT.replace("4242 (claude) S", f"43 (worker) {thread_state}"))
     result = detection.scan_codex_home(tmp_path, [], proc_root=root)
     assert result["state"] == expected
     assert bool(result["issues"]) == (expected == "uncertain")

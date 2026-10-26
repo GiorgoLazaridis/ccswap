@@ -735,7 +735,10 @@ def _codex_macos_sysctl(mib: tuple[int, ...] | str) -> bytes:
     call.argtypes = ([ctypes.c_char_p] if isinstance(mib, str) else
                      [ctypes.POINTER(ctypes.c_int), ctypes.c_uint]) + tail
     call.restype = ctypes.c_int
-    args = [mib.encode("ascii")] if isinstance(mib, str) else [(ctypes.c_int * len(mib))(*mib), len(mib)]
+    args = (
+        [mib.encode("ascii")] if isinstance(mib, str)
+        else [(ctypes.c_int * len(mib))(*mib), len(mib)]
+    )
     size = ctypes.c_size_t()
     if call(*args, None, ctypes.byref(size), None, 0):
         raise OSError(ctypes.get_errno(), "sysctl unavailable")
@@ -852,7 +855,10 @@ def _codex_macos_environment(data: bytes, pointer_size: int = 8) -> tuple[bytes,
     while pos < len(data):
         if data[pos] == 0:  # Alignment between env[] and applev[].
             return data[start:pos], b""
-        if (pos - 4 + len(b"executable_path=")) % pointer_size == 0 and data[pos:].startswith(b"pfz="):
+        if (
+            (pos - 4 + len(b"executable_path=")) % pointer_size == 0
+            and data[pos:].startswith(b"pfz=")
+        ):
             return data[start:pos], data[pos:]
         end = data.find(b"\0", pos)
         if end < 0:

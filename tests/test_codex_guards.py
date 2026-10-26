@@ -100,7 +100,8 @@ def test_a9(slots, b, d, h, s, expected):
                 for n in range(3)]
     home = cs.bootstrap_home(switcher.backup_dir, switcher.codex_home, "1", variants[0])
     manifest = cs.load_record(home / ".ccswap-session.json", "manifest")
-    write(home / ".ccswap-session.json", cs.with_baseline(manifest, cs.auth_fingerprint(variants[b])))
+    write(home / ".ccswap-session.json",
+        cs.with_baseline(manifest, cs.auth_fingerprint(variants[b])))
     write(switcher.auth_file, variants[d])
     write(home / "auth.json", variants[h])
     write(switcher._credential_path("1"), variants[s])
@@ -580,7 +581,8 @@ def test_guard_document_change_not_python_numeric_equality(slots, monkeypatch, f
     if field == "home":
         write(switcher._credential_path("2"), original)
         manifest = cs.load_record(home / ".ccswap-session.json", "manifest")
-        write(home / ".ccswap-session.json", cs.with_baseline(manifest, cs.auth_fingerprint(original)))
+        write(home / ".ccswap-session.json",
+            cs.with_baseline(manifest, cs.auth_fingerprint(original)))
     real = switcher._guard_session_slot
 
     def guard(number):
@@ -661,7 +663,8 @@ def test_default_newer_written_only_to_backup(slots):
 
 
 @pytest.mark.parametrize("read_number", [3, 4])
-def test_default_rotation_before_outgoing_backup_retried_without_writes(slots, monkeypatch, read_number):
+def test_default_rotation_before_outgoing_backup_retried_without_writes(slots, monkeypatch,
+    read_number):
     switcher, credentials = slots
     baseline = dict(credentials[0], last_refresh="2026-10-25T12:00:00Z")
     cs.bootstrap_home(switcher.backup_dir, switcher.codex_home, "1", baseline)

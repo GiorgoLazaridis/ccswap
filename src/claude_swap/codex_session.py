@@ -218,7 +218,10 @@ def validate_record(value: object, kind: str, *, run_id: str | None = None) -> d
             _require(_hex(data["oldFingerprint"]) and _hex(data["newFingerprint"]))
             _require(data["reason"] in ("replacement", "refresh"))
         else:
-            _object(data, ("sourceHome", "baselineFingerprint", "lineage", "bootstrapState", "sharedItems"))
+            _object(
+                data,
+                ("sourceHome", "baselineFingerprint", "lineage", "bootstrapState", "sharedItems"),
+            )
             _require(_absolute(data["sourceHome"]) and _hex(data["baselineFingerprint"]))
             lineage = data["lineage"]
             _require(isinstance(lineage, list) and 1 <= len(lineage) <= 64
@@ -340,7 +343,10 @@ def slot_custody(switcher: CodexAccountSwitcher, number: str, *,
             return Custody("conflict", "retained_home")
         intent = _sharing_exists(home.parent / f".{home.name}.stale.json")
         if not _ordinary(home, directory=True):
-            return Custody("conflict", "missing_home") if intent else Custody("none", "no_session_home")
+            return (
+                Custody("conflict", "missing_home") if intent
+                else Custody("none", "no_session_home")
+            )
         _checked_parents(home, switcher.backup_dir)
         _owned(home)
         manifest = load_record(home / ".ccswap-session.json", "manifest")
@@ -400,7 +406,8 @@ def slot_custody(switcher: CodexAccountSwitcher, number: str, *,
                 issues += 1
     state = "live" if pids else "uncertain" if issues else "quiescent"
     return Custody(state, {"live": "writers_present", "uncertain": "incomplete_scan",
-                          "quiescent": "no_writers"}[state], tuple(sorted(pids)), invalid, issues, intent)
+                          "quiescent": "no_writers"}[state], tuple(sorted(pids)), invalid,
+                   issues, intent)
 
 
 @dataclass(frozen=True)
@@ -532,7 +539,8 @@ def recover_session_credentials(switcher: CodexAccountSwitcher, number: str) -> 
                  for key in ("userId", "workspaceId", "email")))
     _require(intent["reason"] == "replacement"
              or same_identity(accepted, manifest["identity"]))
-    _require(manifest["baselineFingerprint"] in (intent["oldFingerprint"], intent["newFingerprint"]))
+    _require(
+        manifest["baselineFingerprint"] in (intent["oldFingerprint"], intent["newFingerprint"]))
     fingerprint = auth_fingerprint(stored)
     _require(fingerprint in (intent["oldFingerprint"], intent["newFingerprint"]))
     if fingerprint == intent["oldFingerprint"]:
@@ -548,7 +556,8 @@ def recover_session_credentials(switcher: CodexAccountSwitcher, number: str) -> 
         current = load_document(home / "auth.json")
         if current is not None:
             _require(auth_fingerprint(current) in (
-                intent["oldFingerprint"], intent["newFingerprint"], manifest["baselineFingerprint"]))
+                intent["oldFingerprint"], intent["newFingerprint"],
+                manifest["baselineFingerprint"]))
             current_identity, _ = extract_identity(current)
             _require(current_identity["email"] == accepted["email"] and (
                 same_identity(current_identity, manifest["identity"])
@@ -617,7 +626,8 @@ def _refresh_timestamp(value: object) -> datetime:
 
 
 def default_write_decision(
-    d_auth: dict[str, Any], h_auth: dict[str, Any], s_auth: dict[str, Any], manifest: dict[str, Any],
+    d_auth: dict[str, Any], h_auth: dict[str, Any], s_auth: dict[str, Any],
+    manifest: dict[str, Any],
 ) -> str:
     """Classify D -> S under A10; never infer order from fingerprints.
 
@@ -716,7 +726,8 @@ def _new_manifest(home: Path, source: Path, number: str, auth: dict[str, Any]) -
     fingerprint = auth_fingerprint(auth)
     return validate_record(dict(
         schemaVersion=1, accountNumber=number, identity=identity,
-        home=str(home), sourceHome=str(source), baselineFingerprint=fingerprint, lineage=[fingerprint],
+        home=str(home), sourceHome=str(source), baselineFingerprint=fingerprint,
+        lineage=[fingerprint],
         bootstrapState="preparing", sharedItems={},
     ), "manifest")
 
@@ -981,7 +992,7 @@ def _copy_shared(source: Path, destination: Path, source_home: Path, backup: Pat
 
 
 def sync_sharing(backup_root: Path, home: Path, source_home: Path,
-                 manifest: dict[str, Any], persist: Callable[[dict[str, Any]], None],
+             manifest: dict[str, Any], persist: Callable[[dict[str, Any]], None],
                  ) -> tuple[dict[str, Any], list[str]]:
     """Refresh under caller-held R/.lock; persist must durably write each receipt.
 

@@ -292,8 +292,10 @@ class CodexAccountSwitcher:
                       self._current_account_for_auth(default_auth, self._read_sequence()) == number)
             if default_auth is not None and not active:
                 try:
-                    active = cs.same_identity(cs.extract_identity(default_auth)[0],
-                                              cs.extract_identity(self._read_account_auth(number))[0])
+                    active = cs.same_identity(
+                        cs.extract_identity(default_auth)[0],
+                        cs.extract_identity(self._read_account_auth(number))[0],
+                    )
                 except SessionError:
                     pass
             if custody.state == "none" or (custody.state == "quiescent" and active):
@@ -319,7 +321,8 @@ class CodexAccountSwitcher:
                     if cs._CHILD_FORBIDDEN.intersection(values):
                         raise SwitchError("unvalidated_session_routing")
                 result.update(auth=auth, source="session" if custody.state == "live" or
-                              (not allow_refresh and h != baseline) else "backup", refresh=allow_refresh and custody.state == "quiescent")
+                              (not allow_refresh and h != baseline) else "backup",
+                              refresh=allow_refresh and custody.state == "quiescent")
         except ConfigError:
             result.update(auth=None, source="unavailable", refresh=False)
         except (OSError, ValueError, TypeError, KeyError, SessionError, SwitchError):
@@ -489,7 +492,8 @@ class CodexAccountSwitcher:
             retained = ([path for path in sessions.iterdir() if path.name.startswith(f"{number}-")]
                         if _ordinary(sessions, directory=True) else [])
             if retained and (home is None or any(path != home for path in retained)):
-                raise SwitchError(f"Codex session home kept at {retained[0]}; manual disposition required")
+                raise SwitchError(
+                    f"Codex session home kept at {retained[0]}; manual disposition required")
             if home is not None and _sharing_exists(home):
                 manifest = load_record(home / ".ccswap-session.json", "manifest")
                 from claude_swap.exceptions import SessionError
@@ -500,7 +504,8 @@ class CodexAccountSwitcher:
                     raise SwitchError("Codex session generation conflict; files retained") from None
                 if any(identity[key] != manifest["identity"][key]
                        for key in ("userId", "workspaceId", "email")):
-                    raise SwitchError(f"Codex session home kept at {home}; manual disposition required")
+                    raise SwitchError(
+                        f"Codex session home kept at {home}; manual disposition required")
                 stored = self._read_session_backup(number)
                 if occupant and number != existing and not assume_yes:
                     answer = input(f"Overwrite Codex account slot {number}? [y/N] ").strip().lower()
@@ -581,7 +586,8 @@ class CodexAccountSwitcher:
             try:
                 recover_session_credentials(self, number)
             except (OSError, ValueError, TypeError, SessionError):
-                raise SwitchError(f"Codex Account {number} session conflict; files retained") from None
+                raise SwitchError(
+                    f"Codex Account {number} session conflict; files retained") from None
         outcome = (reconcile_session(self, number, quiescent=True)
                    if custody.state == "quiescent" else custody)
         if outcome.state in ("live", "uncertain", "conflict"):
@@ -616,7 +622,8 @@ class CodexAccountSwitcher:
                     and any(tokens.get(key) and tokens[key] == other_tokens.get(key)
                             for key in ("access_token", "refresh_token"))
                     and _sharing_exists(slot_home(self, number))):
-                raise SwitchError("Codex session conflict: default token alias identity is unverified")
+                raise SwitchError(
+                    "Codex session conflict: default token alias identity is unverified")
             if number == legacy:
                 if _sharing_exists(slot_home(self, number)):
                     raise SwitchError("Current Codex login has no verified session identity")
@@ -689,7 +696,8 @@ class CodexAccountSwitcher:
                     if decision == "skip":
                         continue
                     if decision == "conflict":
-                        raise SwitchError("Codex session conflict: default credential lineage diverged")
+                        raise SwitchError(
+                            "Codex session conflict: default credential lineage diverged")
                     writes.append(slot)
                 outcomes = {slot: self._guard_session_slot(slot) for slot in involved}
                 checking = True
@@ -704,9 +712,15 @@ class CodexAccountSwitcher:
                         expected = (value, value, with_baseline(manifest, auth_fingerprint(value)))
                     else:
                         expected = (h, stored, manifest)
-                    if auth_fingerprint({"slot": self._switch_slot_snapshot(slot)}) != auth_fingerprint({"slot": expected}):
+                    if (
+                        auth_fingerprint({"slot": self._switch_slot_snapshot(slot)})
+                        != auth_fingerprint({"slot": expected})
+                    ):
                         raise SwitchError("Codex state changed during switch; retry")
-                if auth_fingerprint({"D": self._read_switch_auth(recheck=True)}) != auth_fingerprint({"D": original_auth}):
+                if (
+                    auth_fingerprint({"D": self._read_switch_auth(recheck=True)})
+                    != auth_fingerprint({"D": original_auth})
+                ):
                     raise SwitchError("Codex state changed during switch; retry")
             except (OSError, SessionError, ValueError, TypeError, KeyError):
                 raise SwitchError("Codex state changed during switch; retry" if checking else
@@ -727,7 +741,10 @@ class CodexAccountSwitcher:
                 )
             expected_target = self._switch_slot_snapshot(number)
             for slot in writes:
-                if auth_fingerprint({"D": self._read_switch_auth(recheck=True)}) != auth_fingerprint({"D": original_auth}):
+                if (
+                    auth_fingerprint({"D": self._read_switch_auth(recheck=True)})
+                    != auth_fingerprint({"D": original_auth})
+                ):
                     raise SwitchError("Codex state changed during switch; retry")
                 if before[slot][2] is not None:
                     self._write_session_backup(slot, original_auth)
@@ -741,9 +758,13 @@ class CodexAccountSwitcher:
                 raise SwitchError(f"Codex Account {number} has an invalid stored auth.json backup")
             if before[number][2] is not None:
                 extract_identity(auth)
-            if (auth_fingerprint({"slot": self._switch_slot_snapshot(number)}) != auth_fingerprint({"slot": expected_target})
-                    or auth_fingerprint(auth) != auth_fingerprint(expected_target[1])
-                    or auth_fingerprint({"D": self._read_switch_auth(recheck=True)}) != auth_fingerprint({"D": original_auth})):
+            if (
+                auth_fingerprint({"slot": self._switch_slot_snapshot(number)})
+                != auth_fingerprint({"slot": expected_target})
+                or auth_fingerprint(auth) != auth_fingerprint(expected_target[1])
+                or auth_fingerprint({"D": self._read_switch_auth(recheck=True)})
+                != auth_fingerprint({"D": original_auth})
+            ):
                 raise SwitchError("Codex state changed during switch; retry")
             try:
                 self._write_json(self.auth_file, auth)
@@ -792,7 +813,8 @@ class CodexAccountSwitcher:
             except SwitchError as exc:
                 if "session conflict" not in str(exc):
                     raise
-        raise SwitchError("No managed Codex account is available (disabled or session custody blocked)")
+        raise SwitchError(
+            "No managed Codex account is available (disabled or session custody blocked)")
 
     @staticmethod
     def _disabled_from_data(data: dict[str, Any], number: str) -> bool:
@@ -1228,7 +1250,9 @@ class CodexAccountSwitcher:
                         if same_identity(live_identity, stored_identity):
                             return None
                         # A lineage member under another login owner is still this family.
-                        if default_write_decision(live_auth, h_auth, stored_auth, manifest) == "skip":
+                        if default_write_decision(
+                            live_auth, h_auth, stored_auth, manifest
+                        ) == "skip":
                             return None
                     live_tokens = live_auth.get("tokens")
                     if (isinstance(live_tokens, dict)

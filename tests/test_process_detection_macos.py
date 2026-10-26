@@ -148,7 +148,8 @@ def test_macos_bad_start_even_missing_pid(mac, start):
                                   b"LONG=" + b"x" * 200000 + b"\0CODEX_HOME=/tmp/home\0"],
                          ids=["special-characters", "large-environment"])
 def test_macos_procargs_preserves_values(env):
-    assert detection._codex_macos_environment(procargs(env, (b"worker", b"arg with spaces"))) == (env, b"")
+    assert detection._codex_macos_environment(
+        procargs(env, (b"worker", b"arg with spaces"))) == (env, b"")
 
 
 @pytest.mark.parametrize("data", [b"", b"\0" * 4, bytes(ctypes.c_int32(-1)),
@@ -170,7 +171,8 @@ def test_macos_hidden_environment_is_empty(env):
 
 
 def test_macos_scan_paths_and_argv_are_distinct(mac, tmp_path):
-    mac.environments[42] = procargs(b"OTHER=x\0", (b"worker", b"CODEX_HOME=" + os.fsencode(tmp_path)))
+    mac.environments[42] = procargs(b"OTHER=x\0",
+        (b"worker", b"CODEX_HOME=" + os.fsencode(tmp_path)))
     assert detection.scan_codex_home(tmp_path, [])["state"] == "quiescent"
     alias = tmp_path / "alias with spaces"
     alias.symlink_to(tmp_path, target_is_directory=True)
@@ -225,7 +227,8 @@ def test_macos_bad_row_size(mac, tmp_path, data):
 def test_macos_bad_boot_is_unknown(mac, tmp_path, data):
     mac.overrides["kern.bootsessionuuid"] = data
     assert detection.codex_process_identity(42) is None
-    assert detection.codex_process_state(999, {"kind": "macos", "bootId": BOOT, "uniqueId": "1"}) == "unknown"
+    assert detection.codex_process_state(999,
+        {"kind": "macos", "bootId": BOOT, "uniqueId": "1"}) == "unknown"
     assert detection.scan_codex_home(tmp_path, [])["state"] == "uncertain"
 
 
@@ -235,7 +238,8 @@ def test_macos_boot_uuid_change_is_exact_mismatch(mac):
     assert detection.codex_process_state(42, start) == "gone"
 
 
-@pytest.mark.parametrize("kind", ["unrelated", "codex", "ancestor", "supervisor", "cycle", "missing"])
+@pytest.mark.parametrize("kind",
+    ["unrelated", "codex", "ancestor", "supervisor", "cycle", "missing"])
 def test_macos_unreadable_attribution(mac, tmp_path, kind):
     mac.rows.clear()
     mac.add(44, comm=b"codex-worker" if kind == "codex" else b"worker")
@@ -272,7 +276,8 @@ def test_macos_inode_alias(mac, tmp_path, monkeypatch):
     alias.mkdir()
     mac.add(env=b"CODEX_HOME=" + os.fsencode(alias) + b"\0")
     real = Path.stat
-    monkeypatch.setattr(Path, "stat", lambda path, *a, **kw: real(tmp_path if path == alias else path, *a, **kw))
+    monkeypatch.setattr(Path, "stat", lambda path, *a,
+        **kw: real(tmp_path if path == alias else path, *a, **kw))
     assert detection.scan_codex_home(tmp_path, [])["state"] == "live"
 
 

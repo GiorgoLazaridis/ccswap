@@ -18,7 +18,8 @@ def gate(tmp_path, monkeypatch):
     cwd = tmp_path / "project"
     cwd.mkdir()
     monkeypatch.setattr(session, "_project_policy_paths", lambda cwd: [cwd / ".codex/config.toml"])
-    identity = dict(userId="user", workspaceId="workspace", email="a@example.org", loginOwnerId=None)
+    identity = dict(userId="user", workspaceId="workspace", email="a@example.org",
+        loginOwnerId=None)
 
     def check(plan="plus", **kwargs):
         return session.check_login_policy(home, cwd, identity, plan,
@@ -112,7 +113,8 @@ def test_source_failures(gate, tmp_path, monkeypatch, failure):
 
         def fail(selected, *args, **kwargs):
             if selected == path:
-                raise PermissionError("synthetic-secret") if failure == "denied" else RecursionError()
+                raise PermissionError(
+                    "synthetic-secret") if failure == "denied" else RecursionError()
             return original(selected, *args, **kwargs)
 
         monkeypatch.setattr(Path, "open", fail)
@@ -163,7 +165,8 @@ def test_project_discovery(tmp_path):
 def test_system_discovery(tmp_path, monkeypatch):
     monkeypatch.setattr(session.sys, "platform", "linux")
     assert session._system_policy_paths() == [Path('/etc/codex') / name for name in
-                                             ('config.toml', 'requirements.toml', 'managed_config.toml')]
+                                             ('config.toml', 'requirements.toml',
+                                                 'managed_config.toml')]
     monkeypatch.setattr(session.sys, "platform", "win32")
     monkeypatch.setattr(session, "_program_data", lambda: tmp_path)
     assert session._system_policy_paths() == [tmp_path / 'OpenAI/Codex' / name for name in
