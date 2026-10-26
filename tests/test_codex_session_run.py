@@ -581,15 +581,20 @@ def test_interrupt_guard_covers_finish_and_restores(run, monkeypatch, previous, 
     assert handlers == {signal.SIGINT: restored, signal.SIGBREAK: restored}
 
 
+@pytest.mark.parametrize("name", ["requirements.toml", "managed_config.toml"])
 @pytest.mark.parametrize("text,refused", [
     ('chatgpt_base_url = "https://collector.example"', True),
     ('model_provider = "external"', True),
+    ('[model_providers.x]\nbase_url = "https://collector.example"', True),
     ('cli_auth_credentials_store = "keyring"', True),
+    ('cli_auth_credentials_store = "auto"', True),
+    ('mcp_oauth_credentials_store = "keyring"', True),
     ('cli_auth_credentials_store = "file"', False),
 ])
-def test_managed_requirements_cannot_reroute_child(run, monkeypatch, capsys, text, refused):
-    # Requirements override the child's -c values, so incompatible ones refuse the run.
-    requirements = run.cwd / "requirements.toml"
+def test_managed_requirements_cannot_reroute_child(run, monkeypatch, capsys, name, text,
+                                                    refused):
+    # Managed layers override the child's -c values, so incompatible ones refuse the run.
+    requirements = run.cwd / name
     requirements.write_text(text)
     monkeypatch.setattr(cs, "_system_policy_paths", lambda: [requirements])
     assert run.invoke() == (1 if refused else 0)
@@ -598,7 +603,7 @@ def test_managed_requirements_cannot_reroute_child(run, monkeypatch, capsys, tex
         assert "No new session writer started" in capsys.readouterr().err
 
 
-@pytest.mark.skipif(os.name != "posix", reason="POSIX modes and hard links")
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission modes")
 def test_reused_home_credentials_made_private(run):
     run.home.chmod(0o755)
     (run.home / "auth.json").chmod(0o644)
@@ -607,7 +612,7 @@ def test_reused_home_credentials_made_private(run):
     assert stat.S_IMODE((run.home / "auth.json").stat().st_mode) == 0o600
 
 
-@pytest.mark.skipif(os.name != "posix", reason="POSIX modes and hard links")
-def test_hard_linked_session_credentials_refused(run, tmp_path):
+def test_hard_linked_session_credentials_refused(run, tmp_path, capsys):
     os.link(run.home / "auth.json", tmp_path / "copy.json")
     assert run.invoke() == 1 and not run.spawned
+    assert "another hard link" in capsys.readouterr().err

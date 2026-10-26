@@ -688,15 +688,22 @@ def _private_directory(path: Path, tree: Path) -> bool:
 
 def _private_credentials(home: Path) -> None:
     """Keep a reused home private: Codex rewrites auth.json in place, keeping its mode."""
-    if os.name != "posix":
-        return
     auth = home / "auth.json"
     _require(_ordinary(home, directory=True) and _ordinary(auth))
     # A second link would receive every rotated token outside the session home.
-    _require(auth.lstat().st_nlink == 1)
+    if auth.lstat().st_nlink != 1:
+        raise SessionError(f"Session login {auth} has another hard link; remove it, "
+                           "then retry. No new session writer started.")
+    if os.name != "posix":
+        return
     for path, mode in ((home, 0o700), (auth, 0o600)):
-        if stat.S_IMODE(path.lstat().st_mode) & 0o077:
-            path.chmod(mode)
+        flags = os.O_RDONLY | os.O_NOFOLLOW | (os.O_DIRECTORY if path == home else 0)
+        descriptor = os.open(path, flags)
+        try:
+            if stat.S_IMODE(os.fstat(descriptor).st_mode) & 0o077:
+                os.fchmod(descriptor, mode)
+        finally:
+            os.close(descriptor)
 
 
 def _session_write(tree: Path, path: Path, data: dict[str, Any]) -> None:
