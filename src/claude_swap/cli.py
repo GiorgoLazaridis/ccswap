@@ -695,10 +695,13 @@ def _codex_command(argv: list[str]) -> None:
                 )
             signal.signal(signal.SIGTERM, lambda *_: engine.stop())
             sys.exit(engine.run_loop())
-        elif args.account:
-            switcher.switch_to(args.account, json_output=args.json)
         else:
-            switcher.switch(strategy=args.strategy, json_output=args.json)
+            if args.account:
+                result = switcher.switch_to(args.account, json_output=args.json)
+            else:
+                result = switcher.switch(strategy=args.strategy, json_output=args.json)
+            if args.json:
+                print(json.dumps(result, indent=2))
     except ClaudeSwitchError as exc:
         error(f"Error: {exc}")
         sys.exit(1)

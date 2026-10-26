@@ -974,20 +974,23 @@ class TestSubcommandAliases:
             show_token_status=False, json_output=True,
         )
 
-    def test_codex_switch_subcommand_dispatches_to_codex_provider(self):
+    def test_codex_switch_subcommand_dispatches_to_codex_provider(self, capsys):
         with patch("claude_swap.cli.CodexAccountSwitcher") as switcher_cls, \
              patch.object(sys, "argv", ["claude-swap", "codex", "switch", "2", "--json"]):
+            switcher_cls.return_value.switch_to.return_value = {"switched": True}
             cli.main()
 
         switcher_cls.return_value.switch_to.assert_called_once_with(
             "2", json_output=True
         )
+        assert json.loads(capsys.readouterr().out) == {"switched": True}
 
     @pytest.mark.parametrize("strategy", ["best", "next-available", "consume-first"])
     def test_codex_switch_strategy_dispatch(self, strategy):
         argv = ["ccswap", "codex", "switch", "--strategy", strategy, "--json"]
         with patch("claude_swap.cli.CodexAccountSwitcher") as switcher_cls, \
              patch.object(sys, "argv", argv):
+            switcher_cls.return_value.switch.return_value = {"switched": False}
             cli.main()
         switcher_cls.return_value.switch.assert_called_once_with(
             strategy=strategy, json_output=True
