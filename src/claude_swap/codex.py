@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import http.client
 import json
 import os
 import sys
@@ -881,7 +882,7 @@ class CodexAccountSwitcher:
                     and not isinstance(remaining, bool)
                     and remaining < before["reset_credits"]["available"]
                 )
-            except (CodexUsageError, ClaudeSwitchError, OSError):
+            except (CodexUsageError, ClaudeSwitchError, OSError, http.client.HTTPException):
                 pass
         self._report_redeem(result, json_output)
         return result

@@ -1045,7 +1045,7 @@ def test_redeem_inactive_post_safety(redemption, monkeypatch, failure):
         return [{"id": "chosen-card"}]
 
     def refresh(auth):
-        # Exercise the real inactive-refresh method and its own FileLock.
+        # A redemption POST must never trigger an inactive refresh.
         refreshed.append(auth)
         return {**auth, "tokens": {**auth["tokens"], "access_token": "refreshed-access"}}
 
@@ -1087,7 +1087,7 @@ def test_redeem_inactive_post_safety(redemption, monkeypatch, failure):
     assert refreshed == []
 
 
-@pytest.mark.parametrize("failure", ["lock", "write"])
+@pytest.mark.parametrize("failure", ["lock", "write", "http"])
 def test_redeem_accepted_survives_confirmation_storage_errors(
     redemption, monkeypatch, capsys, failure
 ):
@@ -1099,6 +1099,10 @@ def test_redeem_accepted_survives_confirmation_storage_errors(
     def fetch(number):
         reads.append(number)
         if len(reads) > 1:
+            if failure == "http":
+                import http.client
+
+                raise http.client.IncompleteRead(b"partial response")
             raise LockError("busy") if failure == "lock" else OSError("disk full")
         return usage
 
