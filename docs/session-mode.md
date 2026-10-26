@@ -16,6 +16,21 @@ Running the account that is already your default login launches plain `claude` o
   
 A session refreshes its own copy of the account's token, so once it exits, the credential it rotated is captured back into the account's stored backup before a switch or usage check uses that backup. While a session is still running, `ccswap switch` refuses to move the default login onto its account if the stored backup has already fallen behind (activating it could only fail); exit the session first, or pick another account. While a session runs, its account's usage is read with the session's own credential and never refreshed by ccswap; a read the server refuses shows as token expired, and is not requested again, until the session renews the credential on its next call.
 
+## Profile safety when session records cannot be read
+
+Before rewriting or removing a session profile, adopting its credential, or
+merging its history, ccswap checks for live Claude instances. If the profile's
+`sessions` directory cannot be enumerated (for example, because access is denied
+or a filesystem error occurs), its state is unknown and the protected action is
+refused or skipped. Restore access to the directory and retry; do not remove records merely
+to bypass the guard while Claude might still be running.
+
+A genuinely missing `sessions` directory still means there are no records.
+Read-only session listings remain tolerant of scan failures. Internally, an
+unreadable directory contributes one to the unreadable count; this is an
+uncertainty indicator, not a count of files that were successfully enumerated.
+The guard does not change regular account-selection policies or Codex behavior.
+
 ## Sharing details — MCP servers & chat history
 
 - With `--share-history`, a session started under one account shows up in `--resume` under the others, and nothing already saved is lost.

@@ -3017,11 +3017,11 @@ class ClaudeAccountSwitcher:
         _, unreadable = scan_live_sessions(session_dir)
         if unreadable:
             raise SessionError(
-                f"Account-{account_num} ({email}) has {unreadable} session "
-                f"record(s) that could not be read, so whether a Claude "
+                f"Account-{account_num} ({email}) has session state that could not be read "
+                f"({unreadable} unreadable record(s) or directory errors), so whether a Claude "
                 f"instance is live cannot be determined. Inspect "
-                f"{session_dir / 'sessions'} and remove or repair them, then "
-                f"retry {action}."
+                f"{session_dir / 'sessions'} and restore access or repair invalid records, "
+                f"then retry {action}. Do not remove records while Claude may still be running."
             )
 
     def _invalidate_session_credentials(self, account_num: str, email: str) -> None:
