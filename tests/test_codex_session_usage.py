@@ -483,3 +483,78 @@ def test_unknown_default_idle_rotation_stays_read_only(usage, monkeypatch, unaut
     assert seen == [rotated]
     assert bool(snapshot.accounts[0].usage.last_error) == unauthorized
     assert switcher._credential_path('1').read_bytes() == before
+
+
+@pytest.mark.parametrize('state', ['live', 'uncertain', 'conflict'])
+def test_redeem_session_preflight_401_never_rotates_or_posts(usage, monkeypatch, state):
+    from claude_swap.exceptions import SwitchError
+
+    switcher, _, _ = usage
+    monkeypatch.setattr(cs, 'slot_custody', lambda *_a, **_k: cs.Custody(state, 'synthetic'))
+    def reject(*_a, **_k):
+        raise CodexUsageError('unauthorized', status_code=401)
+    monkeypatch.setattr(module, 'fetch_codex_usage', reject)
+    monkeypatch.setattr(module, 'refresh_codex_auth', lambda *_a, **_k: pytest.fail('refresh'))
+    monkeypatch.setattr(module, 'consume_reset_credit', lambda *_a, **_k: pytest.fail('POST'))
+    before = switcher._credential_path('1').read_bytes()
+    with pytest.raises(SwitchError):
+        switcher.redeem_reset('1', True, True)
+    assert switcher._credential_path('1').read_bytes() == before
+
+
+def test_refresh_unknown_default_checks_before_reconcile(usage, monkeypatch):
+    from claude_swap.exceptions import ConfigError
+
+    switcher, _, baseline = usage
+    def unreadable():
+        raise ConfigError('synthetic')
+    monkeypatch.setattr(switcher, '_read_switch_auth', unreadable)
+    monkeypatch.setattr(switcher, '_guard_session_slot', lambda *_: pytest.fail('reconcile'))
+    monkeypatch.setattr(module, 'refresh_codex_auth', lambda *_a, **_k: pytest.fail('refresh'))
+    assert switcher._refresh_inactive_auth('1', baseline) is None
+
+
+@pytest.mark.parametrize('state,accepted', [('live', True), ('quiescent', True),
+                                          ('uncertain', False), ('conflict', False)])
+def test_reset_final_custody_gate(usage, monkeypatch, state, accepted):
+    from claude_swap.exceptions import SwitchError
+
+    switcher, _, _ = usage
+    monkeypatch.setattr(cs, 'slot_custody', lambda *_a, **_k: cs.Custody(state, 'synthetic'))
+    calls = []
+    monkeypatch.setattr(module, 'consume_reset_credit', lambda *_a, **_k:
+                        calls.append(1) or {'code': 'reset'})
+    record = switcher._read_sequence()['accounts']['1']
+    if accepted:
+        assert switcher._consume_reset('1', record, 'synthetic', 'card')[0]['code'] == 'reset'
+    else:
+        with pytest.raises(SwitchError):
+            switcher._consume_reset('1', record, 'synthetic', 'card')
+    assert len(calls) == int(accepted)
+
+
+def test_reset_final_gate_refuses_changed_backup_identity(usage, monkeypatch):
+    from claude_swap.exceptions import SwitchError
+
+    switcher, _, baseline = usage
+    other = copy.deepcopy(baseline)
+    other['tokens']['account_id'] = 'other'
+    write(switcher._credential_path('1'), other)
+    monkeypatch.setattr(module, 'consume_reset_credit', lambda *_a, **_k: pytest.fail('POST'))
+    with pytest.raises(SwitchError, match='identity changed'):
+        switcher._consume_reset('1', switcher._read_sequence()['accounts']['1'], 'request', 'card')
+
+
+@pytest.mark.parametrize('failure', ['intent', 'divergence'])
+def test_reset_never_posts_with_pending_or_diverged_credentials(usage, monkeypatch, failure):
+    from claude_swap.exceptions import SwitchError
+
+    switcher, home, baseline = usage
+    monkeypatch.setattr(cs, 'slot_custody', lambda *_a, **_k:
+                        cs.Custody('quiescent', 'synthetic', intent=failure == 'intent'))
+    if failure == 'divergence':
+        write(home / 'auth.json', dict(baseline, rotation=1))
+        write(switcher._credential_path('1'), dict(baseline, rotation=2))
+    monkeypatch.setattr(module, 'consume_reset_credit', lambda *_a, **_k: pytest.fail('POST'))
+    with pytest.raises(SwitchError):
+        switcher._consume_reset('1', switcher._read_sequence()['accounts']['1'], 'request', 'card')

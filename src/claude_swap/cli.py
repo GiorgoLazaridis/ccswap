@@ -626,6 +626,14 @@ def _codex_command(argv: list[str]) -> None:
                      help="Refuse the unisolated default-login shortcut")
     run.add_argument("--shared", action="store_true",
                      help="Join a live session, accepting refresh-token races")
+
+
+    redeem = subcommands.add_parser(
+        "redeem-reset", help="Redeem one banked reset for a saved Codex account"
+    )
+    redeem.add_argument("account", metavar="NUM|EMAIL")
+    redeem.add_argument("--yes", action="store_true", help="Skip confirmation")
+    redeem.add_argument("--json", action="store_true")
     add = subcommands.add_parser("add", help="Save the current Codex login")
     add.add_argument("--slot", type=int, metavar="N")
     switch = subcommands.add_parser("switch", help="Switch to the next or named Codex account")
@@ -666,6 +674,9 @@ def _codex_command(argv: list[str]) -> None:
     if args.action == "switch" and args.account and args.strategy:
         parser.error("--strategy can only be used with bare 'switch'")
 
+    if args.action == "redeem-reset" and args.json and not args.yes:
+        parser.error("--json requires --yes")
+
     try:
         if args.action == "run":
             from pathlib import Path
@@ -684,6 +695,8 @@ def _codex_command(argv: list[str]) -> None:
             switcher.status(json_output=args.json)
         elif args.action == "usage":
             switcher.usage_status(json_output=args.json)
+        elif args.action == "redeem-reset":
+            switcher.redeem_reset(args.account, assume_yes=args.yes, json_output=args.json)
         elif args.action == "add":
             switcher.add_account(slot=args.slot)
         elif args.action == "remove":
