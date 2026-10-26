@@ -238,9 +238,11 @@ def test_macos_boot_uuid_change_is_exact_mismatch(mac):
     assert detection.codex_process_state(42, start) == "gone"
 
 
+# XNU refuses KERN_PROCARGS2 for some live same-uid processes with EINVAL, not EPERM.
+@pytest.mark.parametrize("error", [errno.EPERM, errno.EINVAL])
 @pytest.mark.parametrize("kind",
     ["unrelated", "codex", "ancestor", "supervisor", "cycle", "missing"])
-def test_macos_unreadable_attribution(mac, tmp_path, kind):
+def test_macos_unreadable_attribution(mac, tmp_path, kind, error):
     mac.rows.clear()
     mac.add(44, comm=b"codex-worker" if kind == "codex" else b"worker")
     supervisors = []
@@ -253,7 +255,7 @@ def test_macos_unreadable_attribution(mac, tmp_path, kind):
             supervisors = [(42, detection.codex_process_identity(42))]
     elif kind in ("cycle", "missing"):
         mac.rows[44].kp_eproc.e_ppid = 44 if kind == "cycle" else 999
-    mac.overrides[(1, 49, 44)] = errno.EPERM
+    mac.overrides[(1, 49, 44)] = error
     result = detection.scan_codex_home(tmp_path, supervisors)
     assert result["state"] == ("live" if kind in ("ancestor", "supervisor") else
                                "uncertain" if kind == "codex" else "quiescent")

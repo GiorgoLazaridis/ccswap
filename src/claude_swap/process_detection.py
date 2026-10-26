@@ -890,8 +890,10 @@ def _scan_codex_macos_pid(pid: int, home: Path, proc_root: Path, boot: str) -> t
             except PermissionError:
                 denied = True
             except OSError:
-                _codex_macos_snapshot(pid, proc_root, boot)  # Prove disappearance.
-                return False, ["process data unavailable"], None
+                # XNU answers EINVAL for some surviving processes (e.g. set-id); like denied
+                # data, only Codex-related ones count. A vanished pid raises below.
+                _codex_macos_snapshot(pid, proc_root, boot)
+                denied = True
             after = _codex_macos_snapshot(pid, proc_root, boot)
             if before[0] != after[0]:
                 continue
