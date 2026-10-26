@@ -1921,3 +1921,30 @@ class TestImportUsageCli:
                 cli.main()
         assert exc.value.code == 2
         assert message in capsys.readouterr().err
+
+
+def test_codex_redeem_json_requires_yes(capsys):
+    with pytest.raises(SystemExit) as exc:
+        cli._codex_command(["redeem-reset", "1", "--json"])
+    assert exc.value.code == 2
+    assert "--json requires --yes" in capsys.readouterr().err
+
+
+def test_codex_redeem_dispatch():
+    with patch.object(cli, "CodexAccountSwitcher") as switcher:
+        cli._codex_command(["redeem-reset", "one@example.com", "--yes", "--json"])
+    switcher.return_value.redeem_reset.assert_called_once_with(
+        "one@example.com", assume_yes=True, json_output=True
+    )
+
+
+def test_codex_redeem_error_uses_existing_handler(capsys):
+    from claude_swap.exceptions import SwitchError
+    with patch.object(cli, "CodexAccountSwitcher") as switcher:
+        switcher.return_value.redeem_reset.side_effect = SwitchError("unknown code")
+        with pytest.raises(SystemExit) as exc:
+            cli._codex_command(["redeem-reset", "1", "--yes", "--json"])
+    assert exc.value.code == 1
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "unknown code" in output.err

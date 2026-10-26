@@ -92,3 +92,6 @@ ccswap watch                     # Dashboard, opened on the live watch page
 ccswap upgrade                   # Upgrade ccswap to the latest version
 ccswap purge                     # Remove all ccswap data
 ```
+
+`ccswap codex redeem-reset NUM|EMAIL [--yes] [--json]` explicitly redeems one
+banked reset for a saved ChatGPT account (see [Codex](codex.md)).
