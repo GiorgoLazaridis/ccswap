@@ -776,8 +776,10 @@ def test_macos_publish_exclusive_abi(tmp_path, monkeypatch, result):
         assert name == "/usr/lib/libSystem.B.dylib" and use_errno is True
         return SimpleNamespace(renamex_np=rename)
 
-    monkeypatch.setattr(codex_session, "os", SimpleNamespace(name="posix", fsencode=os.fsencode))
-    monkeypatch.setattr(codex_session.sys, "platform", "darwin")
+    monkeypatch.setattr(codex_session, "os", SimpleNamespace(
+        name="posix", fsencode=os.fsencode, uname=lambda: SimpleNamespace(sysname="Darwin")))
+    # The ABI follows the real OS even when tests steer the process platform elsewhere.
+    monkeypatch.setattr(codex_session.sys, "platform", "linux")
     monkeypatch.setattr(codex_session.ctypes, "CDLL", library)
     monkeypatch.setattr(codex_session.ctypes, "get_errno", lambda: 17)
     if result:
@@ -792,12 +794,12 @@ def test_macos_publish_exclusive_abi(tmp_path, monkeypatch, result):
     assert rename.restype is codex_session.ctypes.c_int
 
 
-@pytest.mark.parametrize("platform", ["linux", "freebsd"])
-def test_publish_missing_primitive_refuses(tmp_path, monkeypatch, platform):
+@pytest.mark.parametrize("system", ["Linux", "FreeBSD"])
+def test_publish_missing_primitive_refuses(tmp_path, monkeypatch, system):
     from types import SimpleNamespace
 
-    monkeypatch.setattr(codex_session, "os", SimpleNamespace(name="posix"))
-    monkeypatch.setattr(codex_session.sys, "platform", platform)
+    monkeypatch.setattr(codex_session, "os", SimpleNamespace(
+        name="posix", uname=lambda: SimpleNamespace(sysname=system)))
     monkeypatch.setattr(codex_session.ctypes, "CDLL", lambda *args, **kwargs: SimpleNamespace())
     with pytest.raises(SessionError):
         codex_session._publish_home(tmp_path / "stage", tmp_path / "home")

@@ -721,9 +721,10 @@ def _publish_home(stage: Path, home: Path) -> None:
     if os.name == "nt":
         os.rename(stage, home)  # Windows rename refuses an existing destination.
         return
-    # Darwin's ABI/behaviour remains unverified until native CI passes.
-    darwin = sys.platform == "darwin"
-    _require(darwin or sys.platform.startswith("linux"))
+    # The kernel ABI follows the real OS, not the platform view tests steer elsewhere.
+    system = os.uname().sysname
+    darwin = system == "Darwin"
+    _require(darwin or system == "Linux")
     library = ctypes.CDLL("/usr/lib/libSystem.B.dylib" if darwin else None, use_errno=True)
     rename = getattr(library, "renamex_np" if darwin else "renameat2", None)
     _require(rename is not None)
