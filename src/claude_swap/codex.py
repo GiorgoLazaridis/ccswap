@@ -261,6 +261,16 @@ class CodexAccountSwitcher:
 
     def _account_plan(self, number: str, account: dict[str, Any], active: str | None) -> str:
         """Read the effective token's plan without refreshing or capturing."""
+        from claude_swap.codex_session import sessions_absent
+
+        if sessions_absent(self):
+            stored = account.get("planType", "")
+            if stored:
+                return stored
+            try:
+                return _plan_type_from_auth(self._read_account_auth(number) or {})
+            except (ConfigError, OSError, ValueError, TypeError):
+                return ""
         try:
             with FileLock(self.lock_file, timeout=2):
                 effective = self._effective_account_auth(number, allow_refresh=False)
@@ -269,16 +279,20 @@ class CodexAccountSwitcher:
         auth = effective["auth"]
         return (_plan_type_from_auth(auth) if auth else "") or account.get("planType", "")
 
-    def _effective_account_auth(self, number: str, *, allow_refresh: bool) -> dict[str, Any]:
-        """Resolve authority under the caller-held store lock; never acquire it here.
+    def _effective_account_auth(self, number: str, *, allow_refresh: bool,
+                                sessions_absent: bool = False) -> dict[str, Any]:
+        """Resolve authority without acquiring a lock.
 
-        Display passes False and never reconciles or refreshes. Usage may reconcile
-        quiescent homes; network refresh remains exclusively in the guarded helper.
+        Caller holds the store lock unless it just proved sessions absent. That
+        observation may race a creator, so it only reads backup/default credentials;
+        every later refresh independently rechecks custody under the store lock.
+        Display never reconciles; locked usage may reconcile quiescent homes.
         """
         from claude_swap import codex_session as cs
         from claude_swap.exceptions import SessionError
 
-        custody = cs.slot_custody(self, number)
+        custody = (cs.Custody("none", "no_session_home") if sessions_absent
+                   else cs.slot_custody(self, number))
         result = {"auth": None, "source": "unavailable", "custody": custody.state,
                   "refresh": False, "reason": {
                       "uncertain": "Codex session liveness is uncertain",
@@ -287,9 +301,14 @@ class CodexAccountSwitcher:
                   "base_url": DEFAULT_CHATGPT_BASE_URL}
         try:
             default_auth = None
+            default_known = True
             if custody.state in ("none", "quiescent"):
-                result["reason"] = "Current Codex auth.json is unreadable"
-                default_auth = self._read_switch_auth()
+                try:
+                    default_auth = self._read_switch_auth()
+                except (ConfigError, OSError, ValueError, TypeError):
+                    # The backup remains useful for read-only quota requests.
+                    # Unknown live identity never grants refresh permission.
+                    default_known = False
             active = (default_auth is not None and
                       self._current_account_for_auth(default_auth, self._read_sequence()) == number)
             if default_auth is not None and not active:
@@ -306,14 +325,15 @@ class CodexAccountSwitcher:
                 result.update(auth=default_auth if active else
                               self._read_account_auth(number),
                               source="default" if active else "backup",
-                              refresh=allow_refresh and not active,
+                              refresh=allow_refresh and not active and default_known,
                               base_url=base_url, reason="stored Codex auth.json is missing")
             elif custody.state in ("live", "quiescent"):
                 home = cs.slot_home(self, number)
-                if custody.state == "quiescent" and allow_refresh:
+                reconcile = custody.state == "quiescent" and allow_refresh and default_known
+                if reconcile:
                     self._guard_session_slot(number)
                 auth, stored, manifest, h, saved, baseline = self._session_auth_snapshot(number)
-                if custody.state == "quiescent" and (allow_refresh or h == baseline):
+                if custody.state == "quiescent" and (reconcile or h == baseline):
                     auth = stored
                 # Session tokens only go to the known backend. Copied routing is
                 # mutable and has no independently validated endpoint authority.
@@ -323,8 +343,8 @@ class CodexAccountSwitcher:
                     if cs._CHILD_FORBIDDEN.intersection(values):
                         raise SwitchError("unvalidated_session_routing")
                 result.update(auth=auth, source="session" if custody.state == "live" or
-                              (not allow_refresh and h != baseline) else "backup",
-                              refresh=allow_refresh and custody.state == "quiescent")
+                              (not reconcile and h != baseline) else "backup",
+                              refresh=allow_refresh and custody.state == "quiescent" and default_known)
         except ConfigError:
             result.update(auth=None, source="unavailable", refresh=False)
         except (OSError, ValueError, TypeError, KeyError, SessionError, SwitchError):
@@ -1030,6 +1050,10 @@ class CodexAccountSwitcher:
 
     def _session_status(self, number: str) -> dict[str, Any]:
         """Observe session state without capture, refresh or credential writes."""
+        from claude_swap.codex_session import sessions_absent
+
+        if sessions_absent(self):
+            return {"state": "absent", "capturePending": False, "runCount": 0, "shared": False}
         try:
             with FileLock(self.lock_file, timeout=2):
                 return self._locked_session_status(number)
@@ -1256,8 +1280,14 @@ class CodexAccountSwitcher:
 
         for number, account in data["accounts"].items():
             try:
-                with FileLock(self.lock_file):
-                    effective[number] = self._effective_account_auth(number, allow_refresh=True)
+                from claude_swap.codex_session import sessions_absent
+
+                if sessions_absent(self):
+                    effective[number] = self._effective_account_auth(
+                        number, allow_refresh=True, sessions_absent=True)
+                else:
+                    with FileLock(self.lock_file):
+                        effective[number] = self._effective_account_auth(number, allow_refresh=True)
             except LockError:
                 # Another ccswap holds the store (e.g. a refresh); report, do not abort.
                 effective[number] = {"auth": None, "source": "unavailable", "custody": "uncertain",

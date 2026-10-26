@@ -135,7 +135,7 @@ def test_default_never_bypasses_existing_session(run, state):
 @pytest.mark.parametrize("after,expected", [("live", 9), ("uncertain", 1)])
 def test_post_exit_scan(run, monkeypatch, capsys, after, expected):
     run.after, run.code = after, 9
-    monkeypatch.setattr(cs.time, "monotonic", iter([0, 2, 4, 6]).__next__)
+    monkeypatch.setattr(cs.time, "monotonic", iter([0, 0, 2, 4, 6]).__next__)
     assert run.invoke() == expected
     output = capsys.readouterr()
     assert output.out == ""
@@ -503,13 +503,10 @@ def test_capture_failure_after_exit_is_not_reported_as_unstarted(run, monkeypatc
     ["exec", "resume", "--last", "-c", 'sqlite_home="db"'],
 ])
 def test_unsupported_syntax_has_no_side_effects(run, monkeypatch, args):
-    from claude_swap import locking
-
     before = {p: p.read_bytes() for p in run.home.rglob("*") if p.is_file()}
     def unexpected(*args, **kwargs):
-        pytest.fail("syntax rejection must precede probes, locks and bootstrap")
+        pytest.fail("syntax rejection must precede probes and bootstrap")
     monkeypatch.setattr(codex_binary, "resolve_codex_binary", unexpected)
-    monkeypatch.setattr(locking, "FileLock", unexpected)
     monkeypatch.setattr(cs, "bootstrap_home", unexpected)
     assert run.invoke(codex_args=args) == 2
     assert not run.spawned
@@ -616,3 +613,37 @@ def test_hard_linked_session_credentials_refused(run, tmp_path, capsys):
     os.link(run.home / "auth.json", tmp_path / "copy.json")
     assert run.invoke() == 1 and not run.spawned
     assert "another hard link" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('platform', ['linux', 'darwin', 'win32'])
+def test_plain_start_skips_session_probe(run, monkeypatch, platform):
+    run.default, run.aliases = auth(), ['1']
+    monkeypatch.setattr(cs.sys, 'platform', platform)
+    monkeypatch.setattr(codex_binary, 'probe_codex', lambda *_: pytest.fail('session probe'))
+    assert run.invoke() == 0
+
+
+def test_macos_isolated_refusal_precedes_binary_resolution(run, monkeypatch, capsys):
+    monkeypatch.setattr(cs.sys, 'platform', 'darwin')
+    monkeypatch.setattr(codex_binary, 'resolve_codex_binary', lambda *_: pytest.fail('resolver'))
+    assert run.invoke() == 1
+    assert 'macOS session supervision' in capsys.readouterr().err
+
+
+def test_account_disabled_during_probe_is_rechecked(run, monkeypatch):
+    def probe(_):
+        data = run.switcher._read_sequence()
+        data['accounts']['1']['disabled'] = True
+        run.switcher.sequence_file.write_text(json.dumps(data))
+    monkeypatch.setattr(codex_binary, 'probe_codex', probe)
+    assert run.invoke() == 1
+    assert not run.spawned
+
+
+def test_default_changed_during_probe_has_retry_message(run, monkeypatch, capsys):
+    def probe(_):
+        run.default, run.aliases = auth(), ['1']
+    monkeypatch.setattr(codex_binary, 'probe_codex', probe)
+    assert run.invoke() == 1
+    assert not run.spawned
+    assert 'state changed during preflight; retry' in capsys.readouterr().err

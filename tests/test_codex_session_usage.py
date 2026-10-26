@@ -210,12 +210,12 @@ def test_unknown_default_never_authorizes_refresh(usage, monkeypatch, failure, s
 
     monkeypatch.setattr(Path, 'read_text', read)
     monkeypatch.setattr(cs, 'slot_custody', lambda *_: cs.Custody(state, 'no_writers'))
-    monkeypatch.setattr(module, 'fetch_codex_usage', lambda *_a, **_k: pytest.fail('fetch'))
+    monkeypatch.setattr(module, 'fetch_codex_usage', lambda *_a, **_k: {'five_hour': {'pct': 10}})
     monkeypatch.setattr(module, 'refresh_codex_auth', lambda *_: pytest.fail('refresh'))
     snapshot = switcher.accounts_snapshot()
     assert reads
-    assert snapshot.accounts[0].usage.last_error == 'Current Codex auth.json is unreadable'
-    assert not snapshot.accounts[0].switchable
+    assert snapshot.accounts[0].usage.last_good == {'five_hour': {'pct': 10}}
+    assert snapshot.accounts[0].switchable
     with FileLock(switcher.lock_file):
         assert not switcher._effective_account_auth('1', allow_refresh=True)['refresh']
 
@@ -420,3 +420,66 @@ def test_snapshot_reports_busy_store_instead_of_failing(usage, monkeypatch):
     monkeypatch.setattr(codex, "FileLock", Busy)
     snapshot = switcher.accounts_snapshot(fetch=None)
     assert all(not account.switchable for account in snapshot.accounts)
+
+
+def test_no_sessions_observation_never_takes_store_lock(usage, monkeypatch):
+    switcher, home, _ = usage
+    # Move the synthetic home aside; no session directory has ever been used here.
+    home.parent.rename(home.parent.with_name('unused-test-homes'))
+    monkeypatch.setattr(module, 'FileLock', lambda *_a, **_k: pytest.fail('store lock'))
+    monkeypatch.setattr(module, 'fetch_codex_usage', lambda *_a, **_k: {})
+    monkeypatch.setattr(cs, 'slot_custody', lambda *_a, **_k: pytest.fail('custody scan'))
+    assert switcher._session_status('1') == {
+        'state': 'absent', 'capturePending': False, 'runCount': 0, 'shared': False}
+    assert switcher._account_plan('1', {'planType': 'plus'}, None) == 'plus'
+    assert switcher.accounts_snapshot().accounts[0].switchable
+
+
+@pytest.mark.parametrize('kind', ['symlink', 'file', 'permission'])
+def test_session_absence_requires_valid_readable_parents(usage, monkeypatch, kind):
+    switcher, home, _ = usage
+    sessions = home.parent
+    sessions.rename(sessions.with_name('retained-test-homes'))
+    if kind == 'symlink':
+        try:
+            sessions.symlink_to(sessions.with_name('retained-test-homes'), target_is_directory=True)
+        except OSError:
+            pytest.skip('directory symlinks unavailable')
+    elif kind == 'file':
+        sessions.write_text('malformed')
+    else:
+        from pathlib import Path
+        original = Path.lstat
+        def denied(path, *args, **kwargs):
+            if path == sessions:
+                raise PermissionError('synthetic')
+            return original(path, *args, **kwargs)
+        monkeypatch.setattr(Path, 'lstat', denied)
+    assert not cs.sessions_absent(switcher)
+
+
+@pytest.mark.parametrize('unauthorized', [False, True])
+def test_unknown_default_idle_rotation_stays_read_only(usage, monkeypatch, unauthorized):
+    from claude_swap.exceptions import ConfigError
+
+    switcher, home, baseline = usage
+    rotated = dict(baseline, rotation=1)
+    write(home / 'auth.json', rotated)
+    monkeypatch.setattr(cs, 'slot_custody', lambda *_: cs.Custody('quiescent', 'no_writers'))
+    def unreadable():
+        raise ConfigError('synthetic default unreadable')
+    monkeypatch.setattr(switcher, '_read_switch_auth', unreadable)
+    monkeypatch.setattr(switcher, '_guard_session_slot', lambda *_: pytest.fail('reconcile'))
+    monkeypatch.setattr(switcher, '_refresh_inactive_auth', lambda *_: pytest.fail('refresh'))
+    seen = []
+    def fetch(auth, **_):
+        seen.append(auth)
+        if unauthorized:
+            raise CodexUsageError('unauthorized', status_code=401)
+        return {}
+    monkeypatch.setattr(module, 'fetch_codex_usage', fetch)
+    before = switcher._credential_path('1').read_bytes()
+    snapshot = switcher.accounts_snapshot()
+    assert seen == [rotated]
+    assert bool(snapshot.accounts[0].usage.last_error) == unauthorized
+    assert switcher._credential_path('1').read_bytes() == before

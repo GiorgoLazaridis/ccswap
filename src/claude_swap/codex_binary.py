@@ -15,7 +15,9 @@ from pathlib import Path
 
 from claude_swap.exceptions import SessionError
 
-_VERSION = "0.164.0"
+_MIN_VERSION = (0, 164, 0)
+_STABLE_VERSION = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+_PACKAGE_VERSION = _STABLE_VERSION + r"(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?"
 _LIMIT = 128 * 1024
 _TIMEOUT = 5
 _LAYOUT = "Cannot resolve the Codex installation. Put the native codex.exe on PATH."
@@ -25,10 +27,14 @@ _TARGETS = {
 }
 
 
-def _metadata(package: Path, name: str) -> None:
+def _metadata(package: Path, name: str, *, expected: str | None = None) -> str:
     data = json.loads((package / "package.json").read_text(encoding="utf-8"))
-    if not isinstance(data, dict) or data.get("name") != name or data.get("version") != _VERSION:
+    if (not isinstance(data, dict) or data.get("name") != name
+            or not isinstance(data.get("version"), str)
+            or (data["version"] != expected if expected is not None
+                else re.fullmatch(_PACKAGE_VERSION, data["version"]) is None)):
         raise SessionError(_LAYOUT)
+    return data["version"]
 
 
 def _platform_package(package: Path, arch: str) -> Path | None:
@@ -90,11 +96,14 @@ def resolve_codex_binary(env: Mapping[str, str]) -> list[str]:
         if binary.suffix.casefold() not in {".cmd", ".bat", ".ps1"}:
             raise SessionError(_LAYOUT)
         package = (binary.parent / "node_modules" / "@openai" / "codex").resolve(strict=True)
-        _metadata(package, "@openai/codex")
+        version = _metadata(package, "@openai/codex")
         if not (package / "bin" / "codex.js").is_file():
             raise SessionError(_LAYOUT)
         arch = _node_arch(binary, env)
         platform = _platform_package(package, arch)
+        if platform is not None:
+            # npm aliases use @openai/codex with a platform-suffixed version.
+            _metadata(platform, "@openai/codex", expected=f"{version}-win32-{arch}")
         root = platform if platform is not None else package
         executable = root / "vendor" / _TARGETS[arch] / "bin" / "codex.exe"
         # A resolved but broken installation must never select another arch/root.
@@ -122,8 +131,9 @@ def probe_codex(argv_prefix: list[str]) -> None:
             for option in ("--version", "--help"):
                 output = _probe_output(argv_prefix + [option], env)
                 if option == "--version":
-                    if re.fullmatch(rb"codex-cli 0\.164\.0\s*", output) is None:
-                        raise SessionError("Session mode requires Codex 0.164.0.")
+                    match = re.fullmatch(rb"codex-cli (" + _STABLE_VERSION.encode() + rb")\s*", output)
+                    if match is None or tuple(map(int, match[1].split(b"."))) < _MIN_VERSION:
+                        raise SessionError("Session mode requires Codex 0.164.0 or newer (stable).")
                 elif re.search(rb"(?<![\w-])--no-daemon(?![\w-])", output) is None:
                     raise SessionError("Codex does not advertise --no-daemon.")
     except (OSError, subprocess.SubprocessError, ValueError) as exc:

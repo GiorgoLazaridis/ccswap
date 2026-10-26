@@ -46,7 +46,7 @@ One live session per account is the default. `--shared` joins the existing home 
 
 ### Requirements and policy refusals
 
-Session mode supports **Codex 0.164.0** and checks its version and `--no-daemon` capability without account credentials. The executable is found on `PATH`. On Windows, ccswap requires native `codex.exe`: it can locate the native binary associated with a standard npm installation, but never executes `.cmd`/`.bat`/PowerShell shims with your arguments. If resolution fails, put native `codex.exe` on `PATH`.
+Isolated session mode requires **stable Codex 0.164.0 or newer** and checks its version and `--no-daemon` capability without account credentials. This is a minimum and capability check, not a claim that every future release has been tested. The plain default-login shortcut skips the session probe and minimum version check; isolated macOS runs report the platform refusal before resolving or probing the binary. The executable is found on `PATH`. On Windows, ccswap requires native `codex.exe`: it can locate the native binary associated with a standard npm installation, but never executes `.cmd`/`.bat`/PowerShell shims with your arguments. If resolution fails, put native `codex.exe` on `PATH`.
 
 Isolated sessions accept known, supported ChatGPT plans. Workspace-managed business/enterprise/education plans and unknown or missing plans are not supported yet; API-key and other authentication modes are also refused. Local system, user and project configuration is checked conservatively before a writer starts. Unreadable configuration, incompatible login/workspace policy, unsupported profiles, custom account routing, managed requirements that replace the backend, provider or credential store, or managed storage paths outside the session home cause a refusal rather than a policy bypass. A hard-linked session `auth.json` is refused, and on POSIX a reused session home is made private again (`0700`/`0600`). Account-routing environment overrides are removed only from the isolated child, with variable names reported on stderr, never their values.
 
@@ -67,6 +67,8 @@ Once the whole session home is proven idle, ccswap reconciles persisted credenti
 All run-wrapper notices go to stderr, leaving Codex stdout (including `exec --json`) untouched. Exit codes are `2` for parser/unsupported syntax errors, `1` for setup, policy, liveness or capture failures, otherwise Codex's exit code. POSIX signal death maps to `128 + signal`; Windows preserves the native nonnegative status.
 
 `ccswap codex list --json` adds `session` to each account row. `ccswap codex status --json` adds `sessions: [{"number": N, "session": ...}]` for every saved account, including those without a home. A session has `state` (`absent`, `idle`, `live`, `uncertain`, `stale`, `conflict`), `capturePending`, `runCount` and `shared`. The actual default remains active; an isolated session does not become the default. See [JSON output](json.md#codex-session-fields).
+
+When `codex/sessions/` is absent, status, plan labels and usage snapshots do not wait for the account-store lock. Access errors or malformed paths do not count as absence. Credential writers and refreshes still recheck custody under the lock. If the default `auth.json` is temporarily unreadable, backup credentials remain available for read-only quota requests; no refresh is authorized until the default login can be checked again.
 
 ### Resolving a session conflict
 

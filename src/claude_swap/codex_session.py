@@ -309,6 +309,22 @@ class Custody:
     intent: bool = False
 
 
+def sessions_absent(switcher: CodexAccountSwitcher) -> bool:
+    """Prove absence for lock-free observations only; writers must check under lock.
+
+    Links, malformed parents and access failures cannot establish absence.
+    A concurrent creator is serialized by the independent writer guards.
+    """
+    try:
+        for path in (switcher.backup_dir, switcher.backup_dir / "codex",
+                     switcher.backup_dir / "codex" / "sessions"):
+            if not _ordinary(path, directory=True):
+                return True
+    except (OSError, SessionError):
+        pass
+    return False
+
+
 def slot_home(switcher: CodexAccountSwitcher, number: str) -> Path:
     """Locate a slot from current metadata, without reading credentials."""
     _require(_decimal(number, positive=True) and not number.startswith("0"))
@@ -1316,7 +1332,7 @@ def check_login_policy(
 
 
 _CHILD_DROP = (
-    "OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN",
+    "OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN",
     "CODEX_REFRESH_TOKEN_URL_OVERRIDE", "CODEX_APP_SERVER_LOGIN_CLIENT_ID",
     "CODEX_EXEC_SERVER_URL",
     # login/src/auth/{manager.rs:226,personal_access_token.rs:12,agent_identity.rs:29–30}.
@@ -1799,14 +1815,7 @@ def run_session(switcher: CodexAccountSwitcher, identifier: str | None, *,
     try:
         cwd = Path(cwd).resolve(strict=True)
         refuse_inherited_home(env)
-        try:
-            _child_parse(codex_args, cwd=cwd)
-        except SessionError:
-            _run_notice("Unsupported Codex launch syntax.")
-            return 2
-        binary = resolve_codex_binary(env)
-        probe_codex(binary)  # Credential-free external commands stay outside R/.lock.
-        with FileLock(switcher.lock_file):
+        def select() -> tuple[str, bool]:
             data = switcher._read_sequence()
             default = switcher._read_switch_auth()
             _require(not default or default.get("tokens") is None
@@ -1831,6 +1840,8 @@ def run_session(switcher: CodexAccountSwitcher, identifier: str | None, *,
                 if custody.state == "quiescent":
                     _require(not custody.intent
                              and classify_session(switcher, alias).state != "conflict")
+            if not plain and sys.platform == "darwin":
+                _run_refuse("macOS session supervision awaits native CI validation.")
             if default and not plain and isinstance(default.get("tokens"), dict):
                 saved = switcher._read_session_backup(number)
                 extract_identity(saved)
@@ -1841,9 +1852,24 @@ def run_session(switcher: CodexAccountSwitcher, identifier: str | None, *,
                 if require_session:
                     _run_refuse(f"Account {number} is the default login; "
                                        "--require-session refuses an unisolated run.")
-            else:
-                if sys.platform == "darwin":
-                    _run_refuse("macOS session supervision awaits native CI validation.")
+            return number, plain
+
+        with FileLock(switcher.lock_file):
+            number, plain = select()
+        if not plain:
+            try:
+                _child_parse(codex_args, cwd=cwd)
+            except SessionError:
+                _run_notice("Unsupported Codex launch syntax.")
+                return 2
+        binary = resolve_codex_binary(env)
+        if not plain:
+            probe_codex(binary)  # External commands never hold the account-store lock.
+        with FileLock(switcher.lock_file):
+            # A probe can take seconds: recheck selection, identity and custody.
+            if select() != (number, plain):
+                _run_refuse("Codex state changed during preflight; retry.")
+            if not plain:
                 home, args, child = _run_prepare(switcher, number, shared, codex_args, env, cwd)
                 _run_subreaper()
                 run_id = str(uuid4())

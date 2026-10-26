@@ -106,7 +106,7 @@ def test_node_arch_overrides_os(installation):
     assert resolve(PROCESSOR_ARCHITECTURE='ARM64') == [str(expected.resolve())]
 
 
-@pytest.mark.parametrize('name,version', [('other', '0.164.0'), ('@openai/codex', '0.163.0')])
+@pytest.mark.parametrize('name,version', [('other', '0.164.0'), ('@openai/codex', 'not-a-version')])
 def test_wrong_metadata(installation, name, version):
     metadata(installation[1], name, version)
     with pytest.raises(SessionError):
@@ -207,7 +207,7 @@ def test_probe_isolation(monkeypatch):
 
 
 @pytest.mark.parametrize('output', [b'codex-cli 0.163.0', b'codex-cli 0.164.00',
-                                    b'0.164.0', b'noise\ncodex-cli 0.164.0', b'\xff'])
+                                    b'codex-cli 0.165.0-alpha.1', b'0.164.0', b'noise\ncodex-cli 0.164.0', b'\xff'])
 def test_version_refused(monkeypatch, output):
     calls = fake_probe(monkeypatch, [output])
     with pytest.raises(SessionError, match='requires Codex 0.164.0'):
@@ -467,3 +467,25 @@ def test_node_read_denied(installation, monkeypatch):
     with pytest.raises(SessionError, match='Put the native codex.exe on PATH') as error:
         resolve()
     assert 'synthetic-private-detail' not in str(error.value)
+
+
+@pytest.mark.parametrize('version', ['0.153.4', '0.165.0', '1.0.0', '0.165.0-alpha.1'])
+def test_resolver_is_independent_of_session_minimum(installation, version):
+    _, package = installation
+    metadata(package, version=version)
+    expected = touch(package / 'vendor' / binary._TARGETS['x64'] / 'bin' / 'codex.exe')
+    assert resolve() == [str(expected.resolve())]
+
+
+@pytest.mark.parametrize('version', ['0.165.0', '1.0.0'])
+def test_newer_stable_with_required_capability(monkeypatch, version):
+    fake_probe(monkeypatch, [f'codex-cli {version}\n'.encode(), b'--no-daemon'])
+    binary.probe_codex(['codex.exe'])
+
+
+def test_platform_package_must_match_selected_installation(installation):
+    _, package = installation
+    platform(package)
+    metadata(package, version='0.165.0')
+    with pytest.raises(SessionError):
+        resolve()
