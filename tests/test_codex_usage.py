@@ -531,6 +531,36 @@ def test_fetch_usage_explains_expired_or_unauthorized_credentials(monkeypatch):
         raise AssertionError("expected a Codex usage error")
 
 
+def test_fetch_usage_wraps_timeout(monkeypatch):
+    def urlopen(request, *, timeout):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(codex_usage.urllib.request, "urlopen", urlopen)
+
+    try:
+        codex_usage.fetch_codex_usage(_auth())
+    except codex_usage.CodexUsageError as exc:
+        assert str(exc) == "Codex usage request failed: timed out"
+    else:
+        raise AssertionError("expected a Codex usage error")
+
+
+def test_refresh_auth_wraps_timeout(monkeypatch):
+    def urlopen(request, *, timeout):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(codex_usage.urllib.request, "urlopen", urlopen)
+    auth = _auth()
+    auth["tokens"]["refresh_token"] = "old-refresh"
+
+    try:
+        codex_usage.refresh_codex_auth(auth)
+    except codex_usage.CodexUsageError as exc:
+        assert str(exc) == "Codex token refresh failed: timed out"
+    else:
+        raise AssertionError("expected a Codex usage error")
+
+
 def test_refresh_auth_uses_codex_refresh_contract_and_rotates_tokens(monkeypatch):
     requested = {}
 

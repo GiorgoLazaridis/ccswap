@@ -5439,6 +5439,100 @@ class TestPurgeLegacyCleanup:
         assert "Legacy backup directory" not in out
 
 
+class TestLiveIdentityForTokenSlots:
+    """Live-login resolution for setup-token slots (``add-token``).
+
+    Token slots are stored personal (org ""), but Claude Code fills the real
+    organization into ``.claude.json`` from its own profile fetch. The live
+    login must still resolve to the token slot -- but only when the live
+    credential is that slot's token.
+    """
+
+    ORG = "org-uuid-1"
+    TOKEN = "sk-ant-oat01-live"
+
+    def _make_switcher(self, temp_home, accounts: dict):
+        switcher = ClaudeAccountSwitcher()
+        switcher._setup_directories()
+        switcher._init_sequence_file()
+        data = switcher._get_sequence_data()
+        data["accounts"] = accounts
+        data["sequence"] = sorted(int(n) for n in accounts)
+        switcher._write_json(switcher.sequence_file, data)
+        return switcher
+
+    @staticmethod
+    def _token_slot(email):
+        return {"email": email, "uuid": "", "organizationUuid": "", "organizationName": ""}
+
+    def _set_live(self, switcher, email, org_uuid, token):
+        switcher._write_json(
+            switcher._get_claude_config_path(),
+            {"oauthAccount": {"emailAddress": email, "organizationUuid": org_uuid}},
+        )
+        creds = json.dumps({"claudeAiOauth": {"accessToken": token}})
+        return patch.object(
+            switcher, "_read_active_credentials",
+            return_value=ActiveCredentials(creds, False),
+        )
+
+    @staticmethod
+    def _stored(token):
+        return json.dumps({"claudeAiOauth": {"accessToken": token}})
+
+    def test_enriched_org_resolves_to_token_slot(self, temp_home):
+        switcher = self._make_switcher(temp_home, {"1": self._token_slot("me@example.com")})
+        with self._set_live(switcher, "me@example.com", self.ORG, self.TOKEN), \
+             patch.object(switcher, "_read_account_credentials", return_value=self._stored(self.TOKEN)):
+            assert switcher.current_account_number() == "1"
+
+    def test_different_token_is_not_guessed_into_slot(self, temp_home):
+        """An unrelated login sharing the email stays unmanaged."""
+        switcher = self._make_switcher(temp_home, {"1": self._token_slot("me@example.com")})
+        with self._set_live(switcher, "me@example.com", self.ORG, "sk-ant-oat01-other"), \
+             patch.object(switcher, "_read_account_credentials", return_value=self._stored(self.TOKEN)):
+            assert switcher.current_account_number() is None
+
+    def test_exact_org_match_wins_without_reading_credentials(self, temp_home):
+        switcher = self._make_switcher(temp_home, {
+            "1": self._token_slot("me@example.com"),
+            "2": {"email": "me@example.com", "uuid": "acct-uuid",
+                  "organizationUuid": self.ORG, "organizationName": "Org"},
+        })
+        with self._set_live(switcher, "me@example.com", self.ORG, self.TOKEN) as active, \
+             patch.object(switcher, "_read_account_credentials") as stored:
+            assert switcher.current_account_number() == "2"
+        active.assert_not_called()
+        stored.assert_not_called()
+
+    def test_switch_rotates_instead_of_auto_adding(self, temp_home):
+        """`switch` must treat the enriched token login as managed: rotate,
+        never auto-add it as a duplicate slot."""
+        switcher = self._make_switcher(temp_home, {
+            "1": self._token_slot("me@example.com"),
+            "2": self._token_slot("other@example.com"),
+        })
+        with self._set_live(switcher, "me@example.com", self.ORG, self.TOKEN), \
+             patch.object(switcher, "_read_account_credentials", return_value=self._stored(self.TOKEN)), \
+             patch.object(switcher, "_account_is_switchable", return_value=True), \
+             patch.object(switcher, "add_account") as add, \
+             patch.object(switcher, "_perform_switch") as perform:
+            switcher.switch()
+        add.assert_not_called()
+        perform.assert_called_once()
+        assert perform.call_args.args[0] == "2"
+
+    def test_login_slot_is_not_a_fallback_candidate(self, temp_home):
+        """A personal /login slot (has an account uuid) keeps exact matching."""
+        switcher = self._make_switcher(temp_home, {
+            "1": {"email": "me@example.com", "uuid": "acct-uuid",
+                  "organizationUuid": "", "organizationName": ""},
+        })
+        with self._set_live(switcher, "me@example.com", self.ORG, self.TOKEN), \
+             patch.object(switcher, "_read_account_credentials", return_value=self._stored(self.TOKEN)):
+            assert switcher.current_account_number() is None
+
+
 class TestAddAccountFromToken:
     """Tests for add_account_from_token (--add-token flow)."""
 

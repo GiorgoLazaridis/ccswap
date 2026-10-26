@@ -631,7 +631,7 @@ def import_accounts(
     # path instead.
     identity = switcher._get_current_account()
     if identity is not None and final is not None:
-        live_slot = switcher._find_account_slot(final, identity[0], identity[1])
+        live_slot = switcher._find_live_account_slot(final, identity[0], identity[1])
         if live_slot is not None and live_slot in written_slots:
             _eprint(
                 f"Note: {identity[0]} is your current live login — activate the "

@@ -87,6 +87,7 @@ class UiSettings:
     theme: str = "auto"
     view: str = "combined"
     mask: bool = False
+    star_prompt: bool = True
 
 
 @dataclass(frozen=True)
@@ -219,6 +220,10 @@ SETTING_SPECS: dict[str, SettingSpec] = {
         SettingSpec(
             "ui", "mask", "mask", "bool",
             help="Mask account emails and organization names in the TUI, Claude Code mod and statusline",
+        ),
+        SettingSpec(
+            "ui", "starPrompt", "star_prompt", "bool",
+            help="Ask for a GitHub star after a switch off a nearly exhausted account",
         ),
         SettingSpec(
             "credentials", "backend", "backend", "choice",
@@ -553,7 +558,14 @@ def load_ui_settings(backup_root: Path) -> UiSettings:
             mask, default.mask,
         )
         mask = default.mask
-    return UiSettings(theme=theme, view=view, mask=mask)
+    star_prompt = section.get("starPrompt", default.star_prompt)
+    if not isinstance(star_prompt, bool):
+        _logger.warning(
+            "settings.json: ui.starPrompt %r is not true or false; using %r",
+            star_prompt, default.star_prompt,
+        )
+        star_prompt = default.star_prompt
+    return UiSettings(theme=theme, view=view, mask=mask, star_prompt=star_prompt)
 
 
 def load_credential_settings(backup_root: Path) -> CredentialSettings:

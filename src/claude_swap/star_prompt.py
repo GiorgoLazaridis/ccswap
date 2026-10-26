@@ -1,7 +1,8 @@
 """Ask for a GitHub star, rarely: after a switch off an account at 95%+ usage.
 
 Shows at most once every 60 days, only in an interactive terminal, and never
-again once the user opens the repo or picks "never". Never raises.
+again once the user opens the repo or picks "never"; disabled by ``ui.starPrompt=false``.
+Never raises.
 """
 
 from __future__ import annotations

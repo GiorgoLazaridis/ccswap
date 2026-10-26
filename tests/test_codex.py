@@ -571,3 +571,182 @@ def test_usage_text_output_credit_state_precedence(
     instance.usage_status()
 
     assert expected in capsys.readouterr().out
+
+
+@pytest.fixture
+def strategy_accounts(switcher, monkeypatch):
+    from dataclasses import replace
+
+    from claude_swap.models import AccountsSnapshot
+    from claude_swap.usage_store import UsageEntry
+
+    instance, home = switcher
+    for number in range(1, 5):
+        _write_live(home, _auth(f"{number}@example.com", f"account-{number}"))
+        instance.add_account(assume_yes=True)
+    instance.switch_to("1", json_output=True)
+    base = instance.accounts_snapshot(fetch=set())
+
+    def configure(
+        pcts, *, disabled=(), api_key=(), sentinel=(), resets=None,
+        active="1", unswitchable=(),
+    ):
+        accounts = []
+        for account, pct in zip(base.accounts, pcts):
+            usage = None if pct is None else {"weekly": {"pct": pct}}
+            if usage and resets and account.number in resets:
+                usage["weekly"]["resets_at"] = resets[account.number]
+            entry = UsageEntry(
+                last_good=usage,
+                sentinel="error" if account.number in sentinel else None,
+            )
+            accounts.append(replace(
+                account,
+                kind="api_key" if account.number in api_key else "oauth",
+                disabled=account.number in disabled,
+                switchable=account.number not in unswitchable,
+                usage=entry,
+            ))
+        snapshot = AccountsSnapshot(active_number=active, accounts=tuple(accounts), taken_at=0)
+        monkeypatch.setattr(instance, "accounts_snapshot", lambda: snapshot)
+        return instance
+
+    return configure
+
+
+@pytest.mark.parametrize("pcts,reason", [
+    ([20, 20, 50, 70], "already-best"),
+    ([10, 20, 50, 70], "already-best"),
+    ([None, 20, 50, 70], "usage-unavailable"),
+    ([100, 100, 110, 100], "candidates-exhausted"),
+    ([10, None, 50, 70], "usage-unavailable"),
+    ([10, None, None, None], "usage-unavailable"),
+])
+def test_strategy_best_stays(strategy_accounts, pcts, reason, capsys, monkeypatch):
+    instance = strategy_accounts(pcts)
+    capsys.readouterr()
+    result = instance.switch(strategy="best", json_output=True)
+    assert result == {
+        "switched": False, "from": {"number": 1, "email": "1@example.com"},
+        "to": {"number": 1, "email": "1@example.com"},
+        "reason": reason, "strategy": "best", "message": result["message"],
+    }
+    assert result["message"]
+    assert capsys.readouterr().out == ""
+    monkeypatch.setattr(codex, "accent", lambda text: f"accent:{text}")
+    monkeypatch.setattr(codex, "dimmed", lambda text: f"dimmed:{text}")
+    monkeypatch.setattr(codex, "warning", lambda text: print(f"warning:{text}"))
+    instance.switch(strategy="best")
+    output = capsys.readouterr().out
+    assert len(output.splitlines()) == 1
+    style = {
+        "already-best": "accent", "candidates-exhausted": "warning",
+        "usage-unavailable": "dimmed",
+    }[reason]
+    assert output.startswith(f"{style}:")
+    if reason == "usage-unavailable":
+        assert output.rstrip().endswith("Run 'ccswap codex switch' to rotate.")
+    assert instance.current_account_number() == "1"
+
+
+def test_strategy_best_switches_to_most_headroom(strategy_accounts):
+    instance = strategy_accounts([90, 50, 10, 30])
+    result = instance.switch(strategy="best", json_output=True)
+    assert result["switched"]
+    assert result["strategy"] == "best"
+    assert result["from"]["number"] == 1
+    assert result["to"]["number"] == 3
+    assert instance.current_account_number() == "3"
+
+
+@pytest.mark.parametrize("excluded", ["disabled", "api_key", "unswitchable", "sentinel"])
+def test_strategy_best_excludes_ineligible_usage(strategy_accounts, excluded):
+    instance = strategy_accounts([80, 0, 50, 90], **{excluded: ("2",)})
+    assert instance.switch(strategy="best", json_output=True)["to"]["number"] == 3
+
+
+@pytest.mark.parametrize("pcts,kwargs,target", [
+    ([50, 100, 30, 10], {"disabled": ("3",)}, 4),
+    ([50, None, 30, 10], {}, 2),
+    ([50, 0, 30, 10], {"api_key": ("2",)}, 3),
+])
+def test_strategy_next_available(strategy_accounts, pcts, kwargs, target):
+    instance = strategy_accounts(pcts, **kwargs)
+    assert instance.switch(strategy="next-available", json_output=True)["to"]["number"] == target
+
+
+def test_strategy_next_available_all_exhausted(strategy_accounts):
+    instance = strategy_accounts([50, 100, 100, 100])
+    result = instance.switch(strategy="next-available", json_output=True)
+    assert not result["switched"]
+    assert result["reason"] == "candidates-exhausted"
+
+
+@pytest.mark.parametrize("strategy", ["best", "consume-first", "next-available"])
+def test_strategy_without_managed_current_stays(strategy_accounts, strategy):
+    instance = strategy_accounts([50, 10, 20, 30], active=None)
+    result = instance.switch(strategy=strategy, json_output=True)
+    assert not result["switched"]
+    assert result["reason"] == "usage-unavailable"
+    assert result["from"]["number"] is None
+
+
+@pytest.mark.parametrize("resets,pcts,target", [
+    ({"1": 400, "2": 100, "3": 200}, [20, 90, 10, 50], 2),
+    ({"1": 400, "2": -100, "3": 200}, [20, 0, 10, 50], 3),
+    ({"1": 400, "2": 100, "3": 200}, [20, 100, 10, 50], 3),
+    ({}, [80, 50, 10, 90], 3),
+    ({"1": 100, "2": 100}, [80, 10, 20, 30], 1),
+    ({"2": 100, "3": 100}, [80, 50, 10, 30], 2),
+])
+def test_strategy_consume_first(strategy_accounts, monkeypatch, resets, pcts, target):
+    from datetime import datetime, timezone
+
+    now = 1800000000
+    monkeypatch.setattr(codex.time, "time", lambda: now)
+    instance = strategy_accounts(pcts, resets={
+        number: datetime.fromtimestamp(now + offset, timezone.utc).isoformat()
+        for number, offset in resets.items()
+    })
+    result = instance.switch(strategy="consume-first", json_output=True)
+    assert result["to"]["number"] == target
+    assert result["switched"] is (target != 1)
+    if target == 1:
+        assert result["reason"] == "already-best"
+        assert "weekly" in result["message"]
+
+
+def test_strategy_only_one_account(switcher, monkeypatch):
+    instance, home = switcher
+    _write_live(home, _auth("one@example.com", "account-one"))
+    instance.add_account(assume_yes=True)
+    snapshot = instance.accounts_snapshot(fetch=set())
+    monkeypatch.setattr(instance, "accounts_snapshot", lambda: snapshot)
+    result = instance.switch(strategy="best", json_output=True)
+    assert not result["switched"]
+    assert result["reason"] == "only-one-account"
+
+
+def test_strategy_rotation_anchors_on_live_login(strategy_accounts):
+    instance = strategy_accounts([10, 20, 30, 40])
+    instance.switch_to("3", json_output=True)
+    snapshot = instance.accounts_snapshot()
+    from dataclasses import replace
+
+    instance.accounts_snapshot = lambda: replace(snapshot, active_number="3")
+    result = instance.switch(strategy="next-available", json_output=True)
+    assert result["from"]["number"] == 3
+    assert result["to"]["number"] == 4
+
+
+def test_plain_rotation_does_not_collect_usage(strategy_accounts, monkeypatch):
+    instance = strategy_accounts([10, 100, 0, 0])
+
+    def unexpected_snapshot():
+        pytest.fail("Plain rotation must not collect usage")
+
+    monkeypatch.setattr(instance, "accounts_snapshot", unexpected_snapshot)
+    assert instance.switch(json_output=True) == {
+        "switched": True, "from": {"number": 1, "email": ""},
+        "to": {"number": 2, "email": "2@example.com"}, "reason": "requested",
+    }

@@ -633,6 +633,29 @@ class TestCLI:
         assert "called" not in seen
 
 
+class TestStarPromptSetting:
+    @pytest.mark.parametrize("enabled", [None, True, False])
+    def test_switch_honours_setting(self, tmp_path: Path, enabled):
+        from claude_swap.settings import set_setting
+
+        if enabled is not None:
+            set_setting(tmp_path, "ui.starPrompt", "on" if enabled else "off")
+        with patch("claude_swap.cli.ClaudeAccountSwitcher") as factory, \
+             patch("claude_swap.paths.get_backup_root", return_value=tmp_path), \
+             patch.object(sys, "argv", ["claude-swap", "--switch"]), \
+             patch("os.geteuid", return_value=1000, create=True), \
+             patch("claude_swap.update_check.check_for_update", return_value=None), \
+             patch("claude_swap.star_prompt.maybe_ask") as ask:
+            switcher = factory.return_value
+            switcher._get_sequence_data.return_value = {"activeAccountNumber": 1}
+            cli.main()
+        switcher.switch.assert_called_once()
+        if enabled is False:
+            ask.assert_not_called()
+        else:
+            ask.assert_called_once_with(switcher, "1")
+
+
 class TestUpdateCheckSetting:
     """The passive update hint honours `updates.check` in settings.json."""
 
@@ -951,14 +974,36 @@ class TestSubcommandAliases:
             show_token_status=False, json_output=True,
         )
 
-    def test_codex_switch_subcommand_dispatches_to_codex_provider(self):
+    def test_codex_switch_subcommand_dispatches_to_codex_provider(self, capsys):
         with patch("claude_swap.cli.CodexAccountSwitcher") as switcher_cls, \
              patch.object(sys, "argv", ["claude-swap", "codex", "switch", "2", "--json"]):
+            switcher_cls.return_value.switch_to.return_value = {"switched": True}
             cli.main()
 
         switcher_cls.return_value.switch_to.assert_called_once_with(
             "2", json_output=True
         )
+        assert json.loads(capsys.readouterr().out) == {"switched": True}
+
+    @pytest.mark.parametrize("strategy", ["best", "next-available", "consume-first"])
+    def test_codex_switch_strategy_dispatch(self, strategy):
+        argv = ["ccswap", "codex", "switch", "--strategy", strategy, "--json"]
+        with patch("claude_swap.cli.CodexAccountSwitcher") as switcher_cls, \
+             patch.object(sys, "argv", argv):
+            switcher_cls.return_value.switch.return_value = {"switched": False}
+            cli.main()
+        switcher_cls.return_value.switch.assert_called_once_with(
+            strategy=strategy, json_output=True
+        )
+
+    def test_codex_switch_strategy_rejects_explicit_account(self, capsys):
+        with patch("claude_swap.cli.CodexAccountSwitcher") as switcher_cls, \
+             patch.object(sys, "argv", ["ccswap", "codex", "switch", "2", "--strategy", "best"]):
+            with pytest.raises(SystemExit) as exc:
+                cli.main()
+        assert exc.value.code == 2
+        assert "--strategy can only be used with bare 'switch'" in capsys.readouterr().err
+        switcher_cls.assert_not_called()
 
     def test_codex_usage_subcommand_dispatches_to_codex_provider(self):
         with patch("claude_swap.cli.CodexAccountSwitcher") as switcher_cls, \
