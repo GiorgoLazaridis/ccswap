@@ -3383,7 +3383,7 @@ class ClaudeAccountSwitcher:
         return None
 
     def _find_live_account_slot(
-        self, data: dict, email: str, organization_uuid: str
+        self, data: dict, email: str, organization_uuid: str, *, cached: bool = False
     ) -> str | None:
         """Slot of the LIVE login identity ``(email, organization_uuid)``.
 
@@ -3402,6 +3402,8 @@ class ClaudeAccountSwitcher:
 
         Only for resolving the live login. Stored-identity lookups (mappings,
         add/re-add, import) keep the exact :meth:`_find_account_slot`.
+        ``cached`` is for display callers polled by the TUI; anything that
+        decides a write reads the backup fresh.
         """
         num = self._find_account_slot(data, email, organization_uuid)
         if num is not None or not organization_uuid:
@@ -3419,7 +3421,7 @@ class ClaudeAccountSwitcher:
         live_token = oauth.extract_access_token(live) if live else None
         if not live_token:
             return None
-        stored = self._read_account_credentials(candidates[0], email)
+        stored = self._read_account_credentials(candidates[0], email, cached=cached)
         if stored and oauth.extract_access_token(stored) == live_token:
             return candidates[0]
         return None
@@ -4382,7 +4384,9 @@ class ClaudeAccountSwitcher:
         active_num = None
         if current_identity is not None:
             current_email, current_org_uuid = current_identity
-            active_num = self._find_live_account_slot(data, current_email, current_org_uuid)
+            active_num = self._find_live_account_slot(
+                data, current_email, current_org_uuid, cached=True
+            )
 
         accounts_info: list[tuple[int, str, str, str, bool, str, str]] = []
         # Reset each build; set below only when the active slot's OAuth Keychain
@@ -6093,7 +6097,9 @@ class ClaudeAccountSwitcher:
                 "active": {"email": current_email, "managed": False},
             }
 
-        account_num = self._find_live_account_slot(data, current_email, current_org_uuid)
+        account_num = self._find_live_account_slot(
+            data, current_email, current_org_uuid, cached=True
+        )
         if not account_num:
             return {
                 "schemaVersion": SCHEMA_VERSION,
@@ -6157,7 +6163,9 @@ class ClaudeAccountSwitcher:
             print(f"{bolded('Status:')} {current_email} {dimmed('(not managed)')}")
             return None
 
-        account_num = self._find_live_account_slot(data, current_email, current_org_uuid)
+        account_num = self._find_live_account_slot(
+            data, current_email, current_org_uuid, cached=True
+        )
         org_name = ""
         if account_num is not None:
             org_name = data["accounts"][account_num].get("organizationName", "") or ""
