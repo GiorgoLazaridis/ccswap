@@ -686,6 +686,19 @@ def _private_directory(path: Path, tree: Path) -> bool:
     return True
 
 
+def _private_credentials(home: Path) -> None:
+    """Keep a reused home private: Codex rewrites auth.json in place, keeping its mode."""
+    if os.name != "posix":
+        return
+    auth = home / "auth.json"
+    _require(_ordinary(home, directory=True) and _ordinary(auth))
+    # A second link would receive every rotated token outside the session home.
+    _require(auth.lstat().st_nlink == 1)
+    for path, mode in ((home, 0o700), (auth, 0o600)):
+        if stat.S_IMODE(path.lstat().st_mode) & 0o077:
+            path.chmod(mode)
+
+
 def _session_write(tree: Path, path: Path, data: dict[str, Any]) -> None:
     """Write only ordinary files below the checked, wrapper-owned tree."""
     _require(path.is_relative_to(tree) and path != tree
@@ -1318,6 +1331,22 @@ _CHILD_FORBIDDEN = {
 }
 
 
+# Managed layers outrank the child's -c overrides: requirements replace routing and the
+# credential store exactly (core/src/config/requirements.rs:33–39), so refuse them early.
+_MANAGED_ROUTING = _CHILD_FORBIDDEN - {
+    "cli_auth_credentials_store", "mcp_oauth_credentials_store",
+    "forced_login_method", "forced_chatgpt_workspace_id",
+}
+
+
+def _check_managed_routing(table: dict[str, Any], source: Path) -> None:
+    for key in sorted(_MANAGED_ROUTING & table.keys()):
+        _policy_error(source, key)
+    for key in ("cli_auth_credentials_store", "mcp_oauth_credentials_store"):
+        if key in table and table[key] != "file":
+            _policy_error(source, key)
+
+
 def refuse_inherited_home(env: dict[str, str]) -> None:
     """Reject an explicitly selected parent home before account discovery."""
     if env.get("CODEX_HOME"):
@@ -1609,6 +1638,7 @@ def _run_prepare(switcher: CodexAccountSwitcher, number: str, shared: bool,
     if custody.state == "none":
         home = bootstrap_home(switcher.backup_dir, switcher.codex_home, number,
                               switcher._read_session_backup(number))
+    _private_credentials(home)
     manifest_path = home / ".ccswap-session.json"
     manifest = load_record(manifest_path, "manifest")
     auth = load_document(home / "auth.json")
@@ -1631,8 +1661,10 @@ def _run_prepare(switcher: CodexAccountSwitcher, number: str, shared: bool,
     _, _, effective = _child_parse(args, cwd=cwd)
     check_login_policy(home, effective, identity, plan)
     layers = _run_layers(home, effective)
-    for source, table, _ in layers:
+    for source, table, managed in layers:
         _check_policy_table(table, source, identity["workspaceId"])
+        if managed:
+            _check_managed_routing(table, source)
     child, notices = child_env(env, home, cwd=cwd)
     if notices:
         names = [notice.removeprefix("Removed ").removesuffix(".") for notice in notices]
