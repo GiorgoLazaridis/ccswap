@@ -360,13 +360,13 @@ def is_codex_running() -> bool:
     """
     try:
         if sys.platform == "win32":
+            # Keep bytes to avoid decoding localized tasklist output with the wrong code page.
             completed = subprocess.run(
                 ["tasklist", "/FI", "IMAGENAME eq codex.exe", "/NH"],
                 capture_output=True,
-                text=True,
                 timeout=5,
             )
-            return "codex.exe" in completed.stdout.lower()
+            return b"codex.exe" in completed.stdout.lower()
         # pgrep -x matches the executable name exactly, so it won't fire on
         # ccswap itself or on unrelated paths that merely contain "codex".
         completed = subprocess.run(

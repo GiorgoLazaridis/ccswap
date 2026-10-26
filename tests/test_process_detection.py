@@ -7,6 +7,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from subprocess import CompletedProcess
 from unittest.mock import patch
 
 import pytest
@@ -19,6 +20,7 @@ from claude_swap.process_detection import (
     _stat_start_ticks,
     get_claude_dir,
     get_running_instances,
+    is_codex_running,
     is_pid_alive,
     list_ide_instances,
     list_sessions,
@@ -43,6 +45,32 @@ class TestGetClaudeDir:
     def test_respects_env_var(self, tmp_path):
         with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(tmp_path)}):
             assert get_claude_dir() == tmp_path
+
+
+# --- is_codex_running ---
+
+
+class TestIsCodexRunning:
+    @pytest.mark.parametrize(
+        "stdout,expected",
+        [
+            ("INFORMATION: Es werden keine Aufgaben mit den angegebenen Kriterien ausgeführt.\n".encode("cp850"), False),
+            (b"Codex.exe                    1234 Console                    1     10,000 K\n", True),
+        ],
+        ids=["localized_no_tasks", "codex_running"],
+    )
+    def test_windows_bytes(self, stdout, expected):
+        with patch("claude_swap.process_detection.sys.platform", "win32"), \
+             patch("claude_swap.process_detection.subprocess.run", return_value=CompletedProcess(
+                 args=[], returncode=0, stdout=stdout,
+             )) as run:
+            assert is_codex_running() is expected
+
+        run.assert_called_once_with(
+            ["tasklist", "/FI", "IMAGENAME eq codex.exe", "/NH"],
+            capture_output=True,
+            timeout=5,
+        )
 
 
 # --- is_pid_alive ---
