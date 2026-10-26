@@ -668,11 +668,13 @@ def test_consume_uncertain_errors_are_not_retried(monkeypatch):
             calls.append(args)
             raise failure
         monkeypatch.setattr(codex_usage.urllib.request, "urlopen", fail)
-        with pytest.raises(codex_usage.CodexUsageError, match="outcome is unknown"):
+        with pytest.raises(codex_usage.CodexUsageError, match="outcome is unknown") as exc:
             codex_usage.consume_reset_credit(
                 _auth(), base_url="https://example.test", redeem_request_id="key"
             )
         assert len(calls) == 1
+        if isinstance(failure, TimeoutError):
+            assert "unknown (" in str(exc.value)
 
 
 def test_reset_response_http_exceptions(monkeypatch):

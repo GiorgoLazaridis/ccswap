@@ -445,7 +445,8 @@ def consume_reset_credit(
         UnicodeDecodeError, ValueError,
     ) as exc:
         raise CodexUsageError(
-            "Reset outcome is unknown; run 'ccswap codex usage' to check. "
+            f"Reset outcome is unknown ({getattr(exc, 'reason', exc)}); "
+            "run 'ccswap codex usage' to check. "
             "Check before retrying: another attempt may spend a second card."
         ) from exc
     if not isinstance(payload, dict) or not isinstance(payload.get("code"), str):

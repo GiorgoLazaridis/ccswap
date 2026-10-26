@@ -1299,9 +1299,19 @@ class CodexAccountSwitcher:
                 self._print_redeem_usage(before)
             if not assume_yes:
                 self._confirm_redeem(card)
-            response, credit_id = self._consume_reset(
-                number, record, str(uuid.uuid4()), card["id"]
-            )
+            try:
+                response, credit_id = self._consume_reset(
+                    number, record, str(uuid.uuid4()), card["id"]
+                )
+            except CodexUsageError as exc:
+                # A 401 means nothing was spent; anything else may have been.
+                if json_output and exc.status_code != 401:
+                    print(json.dumps({
+                        "account": {"number": int(number), "email": record.get("email", "")},
+                        "code": "unknown", "creditId": card["id"],
+                        "confirmed": False, "error": str(exc),
+                    }))
+                raise
         except CodexUsageError as exc:
             raise SwitchError(str(exc)) from exc
         result = {

@@ -852,6 +852,27 @@ def test_redeem_inactive_401_does_not_retry_or_refresh(redemption, monkeypatch):
 
 
 @pytest.mark.parametrize("status", [500, None, 401])
+def test_redeem_json_reports_unknown_outcome(redemption, monkeypatch, capsys, status):
+    instance, _, _ = redemption
+
+    def consume(*a, **k):
+        raise CodexUsageError("timed out", status_code=status)
+
+    monkeypatch.setattr(codex, "consume_reset_credit", consume)
+    with pytest.raises(SwitchError):
+        instance.redeem_reset("1", True, True)
+    out = capsys.readouterr().out
+    if status == 401:
+        assert out == ""
+    else:
+        assert json.loads(out) == {
+            "account": {"number": 1, "email": "one@example.com"},
+            "code": "unknown", "creditId": "earliest", "confirmed": False,
+            "error": "timed out",
+        }
+
+
+@pytest.mark.parametrize("status", [500, None, 401])
 def test_redeem_active_never_retries(redemption, monkeypatch, status):
     instance, _, _ = redemption
     calls = []
