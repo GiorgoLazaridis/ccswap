@@ -18,18 +18,8 @@ A session refreshes its own copy of the account's token, so once it exits, the c
 
 ## Profile safety when session records cannot be read
 
-Before rewriting or removing a session profile, adopting its credential, or
-merging its history, ccswap checks for live Claude instances. If the profile's
-`sessions` directory cannot be enumerated (for example, because access is denied
-or a filesystem error occurs), its state is unknown and the protected action is
-refused or skipped. Restore access to the directory and retry; do not remove records merely
-to bypass the guard while Claude might still be running.
-
-A genuinely missing `sessions` directory still means there are no records.
-Read-only session listings remain tolerant of scan failures. Internally, an
-unreadable directory contributes one to the unreadable count; this is an
-uncertainty indicator, not a count of files that were successfully enumerated.
-The guard does not change regular account-selection policies or Codex behavior.
+If the `sessions` folder can't be read, ccswap can't tell whether Claude is
+running, so it refuses the action. Restore access and retry.
 
 ## Sharing details — MCP servers & chat history
 
