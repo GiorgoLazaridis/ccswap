@@ -18,8 +18,10 @@ A session refreshes its own copy of the account's token, so once it exits, the c
 
 ## Profile safety when session records cannot be read
 
-If the `sessions` folder can't be read, ccswap can't tell whether Claude is
-running, so it refuses the action. Restore access and retry.
+If session records or profile folders can't be read, ccswap can't tell whether
+Claude is running. It refuses profile removal and defers token refresh;
+backup updates preserve the profile's credentials until it is safe to replace
+them. Restore access and retry.
 
 ## Sharing details — MCP servers & chat history
 
