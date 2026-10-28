@@ -5403,6 +5403,10 @@ class ClaudeAccountSwitcher:
                 continue
             entry = entries[num]
             _i = info_by_num[num]
+            if _i[4]:
+                self._heal_active_quarantine_from_live(
+                    entry, num, _i[1], _i[3], _i[5]
+                )
             if self._entry_token_dead(entry, num, _i[1], _i[5], _i[4]):
                 sentinels[num] = USAGE_RELOGIN_REQUIRED
             elif entry.auth_dead_strikes and entry.token_dead():
@@ -5493,6 +5497,61 @@ class ClaudeAccountSwitcher:
             num: with_sentinel(entries[num], sentinels.get(num))
             for num in info_by_num
         }
+
+    def _heal_active_quarantine_from_live(
+        self,
+        entry: UsageEntry,
+        num: str,
+        email: str,
+        org_uuid: str,
+        live: str,
+    ) -> None:
+        """Let a quarantined ACTIVE slot resync its stale backup from live.
+
+        ``_entry_token_dead`` holds an active slot's strike while ANY stored
+        source still carries the struck generation. When Claude Code rotated
+        the live credential, the backup is left on the struck (consumed)
+        generation, and the only thing that resyncs it —
+        ``_resync_rotated_backup`` on the fetch fast path — never runs for a
+        quarantined slot (its sentinel keeps it out of ``requested``). Left
+        alone that is a deadlock: a healthy, working account reads "re-login
+        needed" forever. Attempting the resync here breaks it; the caller
+        then re-evaluates the verdict, and a backup that no longer matches
+        the struck fingerprint lets its existing branch clear the strike row.
+
+        Only attempted when the live credential is demonstrably a NEWER
+        lineage than the struck one and ``_resync_rotated_backup`` can
+        actually use it, so a pass that cannot succeed costs no network:
+
+        - the strike is at threshold and bound to a fingerprint (a legacy
+          unbound row cannot say which generation was condemned);
+        - live is not the condemned generation itself;
+        - live carries a full token pair and an unexpired access token — the
+          ownership probe authenticates with it;
+        - the active read is neither degraded (its bytes may be the consumed
+          predecessor, so writing them could clobber a fresher backup — the
+          same rule as the fast path) nor unreadable.
+
+        Ownership attribution, locking, verdict memoization and the
+        never-raises contract all stay in ``_resync_rotated_backup``; the
+        probe runs before any lock, and this scan holds none.
+        """
+        struck = entry.struck_fingerprint
+        if struck is None or not entry.token_dead():
+            return
+        if oauth.credential_fingerprint(live) in (None, struck):
+            return
+        live_oauth = oauth.extract_oauth_data(live)
+        if not (
+            live_oauth
+            and live_oauth.get("accessToken")
+            and live_oauth.get("refreshToken")
+            and not oauth.is_oauth_token_expired(live_oauth.get("expiresAt"))
+        ):
+            return
+        if self._active_read_degraded or self._active_read_unreadable:
+            return
+        self._resync_rotated_backup(num, email, org_uuid, live)
 
     def _slot_token_dead(self, num: str, email: str) -> bool:
         """Is this slot quarantined as refresh-token-dead, right now?
