@@ -41,7 +41,7 @@ Pure display helpers receive a translator explicitly; `mark(...)` marks labels
 such as class-level key bindings for translation at mount time.
 
 ```bash
-uv run pybabel extract -k tr -k mark --project ccswap -o src/claude_swap/locale/ccswap.pot src/claude_swap/tui
+uv run pybabel extract -k tr -k mark --project ccswap -o src/claude_swap/locale/ccswap.pot src/claude_swap
 uv run pybabel update -D ccswap -i src/claude_swap/locale/ccswap.pot -d src/claude_swap/locale
 ```
 

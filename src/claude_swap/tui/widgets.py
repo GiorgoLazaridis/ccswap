@@ -184,9 +184,11 @@ def usage_rows(
     return rows
 
 
-def reset_credits_text(last_good: dict | None, now: float, *, tr: Callable[[str], str] = str) -> str | None:
+def reset_credits_text(
+    last_good: dict | None, now: float, *, tr: Callable[[str], str] = str
+) -> str | None:
     """Compact Codex banked-reset count and earliest local expiry."""
-    display = reset_credit_display(last_good, now)
+    display = reset_credit_display(last_good, now, tr=tr)
     return display.text if display else None
 
 
@@ -304,12 +306,14 @@ def account_card_text(
     if age:
         text.append(f"   {age}", style=palette.muted)
 
-    reset_display = reset_credit_display(acc.usage.last_good, now)
+    reset_display = reset_credit_display(acc.usage.last_good, now, tr=tr)
     if reset_display and reset_display.urgent:
-        text.append("\n    ⚠ Resets ", style=_reset_style(reset_display, palette))
+        text.append(
+            "\n    ⚠ " + tr("Resets "), style=_reset_style(reset_display, palette)
+        )
         text.append(reset_display.text, style=_reset_style(reset_display, palette))
         if acc.usage.sentinel or acc.usage.last_error:
-            text.append(" · last known", style=palette.muted)
+            text.append(tr(" · last known"), style=palette.muted)
 
     sentinel = acc.usage.sentinel
     if sentinel is not None:
@@ -405,13 +409,16 @@ def mini_account_text(
     alias, email, org = _identity(acc, mask=mask)
     text = Text(no_wrap=True, overflow="ellipsis")
     text.append(f"{acc.number:>2}  ", style=f"bold {palette.muted}")
-    reset_display = reset_credit_display(acc.usage.last_good, now)
+    reset_display = reset_credit_display(acc.usage.last_good, now, tr=tr)
     if reset_display and reset_display.urgent:
         text.no_wrap = False
         text.overflow = "fold"
-        text.append(f"⚠ Resets {reset_display.text}\n    ", style=_reset_style(reset_display, palette))
+        text.append(
+            "⚠ " + tr("Resets {resets}").format(resets=reset_display.text) + "\n    ",
+            style=_reset_style(reset_display, palette),
+        )
         if acc.usage.sentinel or acc.usage.last_error:
-            text.append("last known · ", style=palette.muted)
+            text.append(tr("last known · "), style=palette.muted)
     if alias:
         text.append(alias, style=f"bold {palette.accent}")
         text.append(f" ({email})", style=palette.foreground)
@@ -695,7 +702,12 @@ class MenuItem(ListItem):
     """One menu row: a label plus an action id the screen dispatches on."""
 
     def __init__(
-        self, label: str, action_id: str, *, muted: bool = False, help_text: str | None = None
+        self,
+        label: str,
+        action_id: str,
+        *,
+        muted: bool = False,
+        help_text: str | None = None,
     ) -> None:
         item = Static(label, markup=False)
         if muted:

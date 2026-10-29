@@ -3025,3 +3025,43 @@ def test_translated_quota_labels_preserve_window_ids_and_spend_countdowns():
     assert 'Weekly' in seen and 'Woche' not in seen
     assert 'Woche' in card and 'Reset in 1h' in card
     assert 'Woche' in mini_account_text(account, now, tr=translate).plain
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('language,expiry_phrase,help_phrase', [
+    ('de', 'frühester Ablauf', 'Terminalhintergrund'),
+    ('el', 'πρώτη λήξη', 'φόντο του τερματικού'),
+])
+async def test_combined_language_help_and_expiry_display(tmp_path, language, expiry_phrase, help_phrase):
+    from textual.widgets import ListView, Static, Tooltip
+    from claude_swap.tui.widgets import AccountsPanel, MenuItem
+    from claude_swap.tui.modals import OutputModal
+    now = time.time()
+    expiry = datetime.fromtimestamp(now + 1800, timezone.utc)
+    entry = UsageEntry(last_good={'reset_credits': {'available': 1, 'expires_at': expiry.isoformat()}}, fetched_at=now)
+    original = {'ui': {'language': language}}
+    (tmp_path / 'settings.json').write_text(json.dumps(original))
+    fake = FakeSwitcher([], tmp_path)
+    codex = FakeSwitcher([make_account(1, entry=entry)], tmp_path)
+    app = make_app(fake, codex=codex)
+    app.TOOLTIP_DELAY = 0.01
+    async with app.run_test(size=(100, 40), tooltips=True) as pilot:
+        await settle(pilot)
+        panel = app.screen.query_one(AccountsPanel).render().plain
+        assert expiry_phrase in panel
+        assert expiry.astimezone().strftime('%Y-%m-%d %H:%M %Z (%z)') in panel
+        await menu_select(pilot, 'settings-menu')
+        menu = app.screen.query_one('#menu', ListView)
+        row = next(item for item in menu.query(MenuItem) if item.action_id == 'setting:theme')
+        menu.index = list(menu.children).index(row)
+        await pilot.hover(row.query_one(Static))
+        await pilot.pause(0.1)
+        assert help_phrase in str(app.screen.query_one(Tooltip).render())
+        await pilot.press('question_mark')
+        await pilot.pause()
+        assert isinstance(app.screen, OutputModal)
+        assert help_phrase in app.screen._output
+        await pilot.press('escape')
+        assert json.loads((tmp_path / 'settings.json').read_text()) == original
+        assert not codex.calls
+        assert not fake.calls

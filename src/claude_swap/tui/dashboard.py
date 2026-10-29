@@ -377,7 +377,7 @@ class DashboardScreen(Screen):
                 self.app.gettext("← back") if action_id == "back" else label,
                 action_id,
                 muted=(action_id == "back"),
-                help_text=option_help(action_id),
+                help_text=option_help(action_id, self.app.gettext),
             )
             for label, action_id in entries
         )
@@ -386,8 +386,12 @@ class DashboardScreen(Screen):
     def action_option_help(self) -> None:
         menu = self.query_one("#menu", ListView)
         item = menu.highlighted_child
-        if isinstance(item, MenuItem) and (help_text := option_help(item.action_id)):
-            self.app.push_screen(OutputModal("Option help", help_text))
+        if isinstance(item, MenuItem) and (
+            help_text := option_help(item.action_id, self.app.gettext)
+        ):
+            self.app.push_screen(
+                OutputModal(self.app.gettext("Option help"), help_text)
+            )
 
     async def on_list_view_selected(self, event: ListView.Selected) -> None:
         item = event.item

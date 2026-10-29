@@ -1,6 +1,8 @@
 """Read-only presentation of the earliest available Codex reset expiry."""
+
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Callable
 
 
 @dataclass(frozen=True)
@@ -13,7 +15,9 @@ class ResetCreditDisplay:
         return self.severity != "normal"
 
 
-def reset_credit_display(usage: dict | None, now: float) -> ResetCreditDisplay | None:
+def reset_credit_display(
+    usage: dict | None, now: float, *, tr: Callable[[str], str] = str
+) -> ResetCreditDisplay | None:
     if not isinstance(usage, dict):
         return None
     credits = usage.get("reset_credits")
@@ -22,7 +26,7 @@ def reset_credit_display(usage: dict | None, now: float) -> ResetCreditDisplay |
     count = credits.get("available")
     if not isinstance(count, int) or isinstance(count, bool) or count < 0:
         return None
-    text = f"{count} banked"
+    text = tr("{count} banked").format(count=count)
     if count == 0:
         return ResetCreditDisplay(text)
     try:
@@ -32,19 +36,33 @@ def reset_credit_display(usage: dict | None, now: float) -> ResetCreditDisplay |
         remaining = expiry.timestamp() - now
         local = expiry.astimezone().strftime("%Y-%m-%d %H:%M %Z (%z)")
     except (KeyError, AttributeError, TypeError, ValueError, OverflowError, OSError):
-        return ResetCreditDisplay(f"{text} · expiry unknown")
+        return ResetCreditDisplay(tr("{text} · expiry unknown").format(text=text))
     if remaining <= 0:
         return ResetCreditDisplay(
-            f"{text} · earliest expiry passed ({local}); refresh usage to confirm", "expired"
+            tr(
+                "{text} · earliest expiry passed ({local}); refresh usage to confirm"
+            ).format(text=text, local=local),
+            "expired",
         )
     minutes = int(remaining // 60)
     days, hours = divmod(minutes // 60, 24)
     if remaining < 60:
-        countdown = "less than 1m"
+        countdown = tr("less than 1m")
     elif days:
         countdown = f"{days}d {hours}h"
     else:
         hours, minutes = divmod(minutes, 60)
         countdown = f"{hours}h {minutes}m" if hours else f"{minutes}m"
-    severity = "critical" if remaining <= 3600 else "warning" if remaining <= 86400 else "normal"
-    return ResetCreditDisplay(f"{text} · earliest expires in {countdown} ({local})", severity)
+    severity = (
+        "critical"
+        if remaining <= 3600
+        else "warning"
+        if remaining <= 86400
+        else "normal"
+    )
+    return ResetCreditDisplay(
+        tr("{text} · earliest expires in {countdown} ({local})").format(
+            text=text, countdown=countdown, local=local
+        ),
+        severity,
+    )

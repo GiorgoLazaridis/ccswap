@@ -6,8 +6,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: ccswap 0.43.0\n"
 "Report-Msgid-Bugs-To: https://github.com/errhythm/ccswap/issues\n"
-"POT-Creation-Date: 2026-10-29 22:45+0100\n"
-"PO-Revision-Date: 2026-10-29 21:45+0000\n"
+"POT-Creation-Date: 2026-10-29 22:53+0100\n"
+"PO-Revision-Date: 2026-10-29 21:53+0000\n"
 "Last-Translator: Giorgo Lazaridis <kontakt@lazaridis.me>\n"
 "Language: de\n"
 "Language-Team: de\n"
@@ -16,6 +16,32 @@ msgstr ""
 "Content-Type: text/plain; charset=utf-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Generated-By: Babel 2.18.0\n"
+
+#: src/claude_swap/reset_credit_display.py:29
+#, python-brace-format
+msgid "{count} banked"
+msgstr "{count} angespart"
+
+#: src/claude_swap/reset_credit_display.py:39
+#, python-brace-format
+msgid "{text} · expiry unknown"
+msgstr "{text} · Ablauf unbekannt"
+
+#: src/claude_swap/reset_credit_display.py:43
+#, python-brace-format
+msgid "{text} · earliest expiry passed ({local}); refresh usage to confirm"
+msgstr ""
+"{text} · frühester Ablauf überschritten ({local}); Kontingent zur "
+"Bestätigung aktualisieren"
+
+#: src/claude_swap/reset_credit_display.py:50
+msgid "less than 1m"
+msgstr "weniger als 1m"
+
+#: src/claude_swap/reset_credit_display.py:64
+#, python-brace-format
+msgid "{text} · earliest expires in {countdown} ({local})"
+msgstr "{text} · frühester Ablauf in {countdown} ({local})"
 
 #: src/claude_swap/tui/app.py:60
 msgid "Theme"
@@ -85,8 +111,8 @@ msgstr "Konto {number}"
 msgid "Switched to {target}"
 msgstr "Zu {target} gewechselt"
 
-#: src/claude_swap/tui/app.py:442 src/claude_swap/tui/dashboard.py:679
-#: src/claude_swap/tui/dashboard.py:727
+#: src/claude_swap/tui/app.py:442 src/claude_swap/tui/dashboard.py:693
+#: src/claude_swap/tui/dashboard.py:741
 msgid "Switch"
 msgstr "Wechseln"
 
@@ -276,8 +302,8 @@ msgstr "+1%"
 msgid "Done"
 msgstr "Fertig"
 
-#: src/claude_swap/tui/autoview.py:89 src/claude_swap/tui/dashboard.py:93
-#: src/claude_swap/tui/dashboard.py:681 src/claude_swap/tui/dashboard.py:730
+#: src/claude_swap/tui/autoview.py:89 src/claude_swap/tui/dashboard.py:95
+#: src/claude_swap/tui/dashboard.py:695 src/claude_swap/tui/dashboard.py:744
 msgid "Back"
 msgstr "Zurück"
 
@@ -336,7 +362,7 @@ msgstr " (Sitzung)"
 msgid " · poll every {interval_seconds:.0f}s"
 msgstr " · Abfrage alle {interval_seconds:.0f}s"
 
-#: src/claude_swap/tui/autoview.py:390 src/claude_swap/tui/dashboard.py:751
+#: src/claude_swap/tui/autoview.py:390 src/claude_swap/tui/dashboard.py:765
 msgid " · masked"
 msgstr " · maskiert"
 
@@ -401,213 +427,217 @@ msgstr "Schwellen anpassen"
 msgid "↑↓ category    ←→ ±1%    ⌫ inherit    enter done"
 msgstr "↑↓ Kategorie    ←→ ±1%    ⌫ erben    Enter fertig"
 
-#: src/claude_swap/tui/dashboard.py:67
+#: src/claude_swap/tui/dashboard.py:69
 #, python-brace-format
 msgid "inherit ({inherited:g}%)"
 msgstr "geerbt ({inherited:g}%)"
 
-#: src/claude_swap/tui/dashboard.py:91
+#: src/claude_swap/tui/dashboard.py:93
 msgid "Switch accounts"
 msgstr "Konten wechseln"
 
-#: src/claude_swap/tui/dashboard.py:92
+#: src/claude_swap/tui/dashboard.py:94
 msgid "Watch"
 msgstr "Beobachten"
 
-#: src/claude_swap/tui/dashboard.py:94 src/claude_swap/tui/dashboard.py:143
+#: src/claude_swap/tui/dashboard.py:96 src/claude_swap/tui/dashboard.py:146
 msgid "Quit"
 msgstr "Beenden"
 
-#: src/claude_swap/tui/dashboard.py:96
+#: src/claude_swap/tui/dashboard.py:97 src/claude_swap/tui/dashboard.py:393
+msgid "Option help"
+msgstr "Hilfe zur Option"
+
+#: src/claude_swap/tui/dashboard.py:99
 msgid "Auto view"
 msgstr "Automatikansicht"
 
-#: src/claude_swap/tui/dashboard.py:97
+#: src/claude_swap/tui/dashboard.py:100
 msgid "Refresh usage"
 msgstr "Kontingente aktualisieren"
 
-#: src/claude_swap/tui/dashboard.py:136
+#: src/claude_swap/tui/dashboard.py:139
 msgid "Switch account…"
 msgstr "Konto wechseln…"
 
-#: src/claude_swap/tui/dashboard.py:137
+#: src/claude_swap/tui/dashboard.py:140
 msgid "Watch accounts"
 msgstr "Konten beobachten"
 
-#: src/claude_swap/tui/dashboard.py:138
+#: src/claude_swap/tui/dashboard.py:141
 msgid "Auto-switch view…"
 msgstr "Automatischer Kontowechsel…"
 
-#: src/claude_swap/tui/dashboard.py:139
+#: src/claude_swap/tui/dashboard.py:142
 msgid "Add account…"
 msgstr "Konto hinzufügen…"
 
-#: src/claude_swap/tui/dashboard.py:140
+#: src/claude_swap/tui/dashboard.py:143
 msgid "Disable / enable account…"
 msgstr "Konto deaktivieren / aktivieren…"
 
-#: src/claude_swap/tui/dashboard.py:141
+#: src/claude_swap/tui/dashboard.py:144
 msgid "Remove account…"
 msgstr "Konto entfernen…"
 
-#: src/claude_swap/tui/dashboard.py:142
+#: src/claude_swap/tui/dashboard.py:145
 msgid "Settings…"
 msgstr "Einstellungen…"
 
-#: src/claude_swap/tui/dashboard.py:148
+#: src/claude_swap/tui/dashboard.py:151
 msgid "Claude Code — current login"
 msgstr "Claude Code — aktuelle Anmeldung"
 
-#: src/claude_swap/tui/dashboard.py:149
+#: src/claude_swap/tui/dashboard.py:152
 msgid "Claude Code — setup token or API key…"
 msgstr "Claude Code — Setup-Token oder API-Schlüssel…"
 
-#: src/claude_swap/tui/dashboard.py:150
+#: src/claude_swap/tui/dashboard.py:153
 msgid "Codex — current login"
 msgstr "Codex — aktuelle Anmeldung"
 
-#: src/claude_swap/tui/dashboard.py:188
+#: src/claude_swap/tui/dashboard.py:191
 msgid "→ enable"
 msgstr "→ aktivieren"
 
-#: src/claude_swap/tui/dashboard.py:190
+#: src/claude_swap/tui/dashboard.py:193
 msgid "→ disable"
 msgstr "→ deaktivieren"
 
-#: src/claude_swap/tui/dashboard.py:192 src/claude_swap/tui/widgets.py:411
+#: src/claude_swap/tui/dashboard.py:195 src/claude_swap/tui/widgets.py:429
 msgid "  (disabled)"
 msgstr "  (deaktiviert)"
 
-#: src/claude_swap/tui/dashboard.py:206
+#: src/claude_swap/tui/dashboard.py:209
 msgid "Combined"
 msgstr "Beide Anbieter"
 
-#: src/claude_swap/tui/dashboard.py:215
+#: src/claude_swap/tui/dashboard.py:218
 #, python-brace-format
 msgid "Theme: {theme_name}"
 msgstr "Design: {theme_name}"
 
-#: src/claude_swap/tui/dashboard.py:221
+#: src/claude_swap/tui/dashboard.py:224
 #, python-brace-format
 msgid "Dashboard view: {view}"
 msgstr "Dashboard-Ansicht: {view}"
 
-#: src/claude_swap/tui/dashboard.py:227
+#: src/claude_swap/tui/dashboard.py:230
 #, python-brace-format
 msgid "Mask account info: {state}"
 msgstr "Kontoinfos maskieren: {state}"
 
-#: src/claude_swap/tui/dashboard.py:228 src/claude_swap/tui/dashboard.py:297
+#: src/claude_swap/tui/dashboard.py:231 src/claude_swap/tui/dashboard.py:300
 msgid "on"
 msgstr "an"
 
-#: src/claude_swap/tui/dashboard.py:230 src/claude_swap/tui/dashboard.py:297
+#: src/claude_swap/tui/dashboard.py:233 src/claude_swap/tui/dashboard.py:300
 msgid "off"
 msgstr "aus"
 
-#: src/claude_swap/tui/dashboard.py:235
+#: src/claude_swap/tui/dashboard.py:238
 #, python-brace-format
 msgid "Auto-switch threshold: {threshold_label}%"
 msgstr "Automatische Wechselschwelle: {threshold_label}%"
 
-#: src/claude_swap/tui/dashboard.py:241
+#: src/claude_swap/tui/dashboard.py:244
 #, python-brace-format
 msgid "5h gate: {gate}"
 msgstr "5h-Grenze: {gate}"
 
-#: src/claude_swap/tui/dashboard.py:249
+#: src/claude_swap/tui/dashboard.py:252
 #, python-brace-format
 msgid "Weekly gate: {gate}"
 msgstr "Wochengrenze: {gate}"
 
-#: src/claude_swap/tui/dashboard.py:257
+#: src/claude_swap/tui/dashboard.py:260
 #, python-brace-format
 msgid "Fable gate: {gate}"
 msgstr "Fable-Grenze: {gate}"
 
-#: src/claude_swap/tui/dashboard.py:267
+#: src/claude_swap/tui/dashboard.py:270
 #, python-brace-format
 msgid "Auto-switch strategy: {strategy_name}"
 msgstr "Automatische Wechselstrategie: {strategy_name}"
 
-#: src/claude_swap/tui/dashboard.py:273
+#: src/claude_swap/tui/dashboard.py:276
 #, python-brace-format
 msgid "Claude statusline: {state}"
 msgstr "Claude-Statuszeile: {state}"
 
-#: src/claude_swap/tui/dashboard.py:279
+#: src/claude_swap/tui/dashboard.py:282
 #, python-brace-format
 msgid "Claude Code mod: {state}"
 msgstr "Claude-Code-Plug-in: {state}"
 
-#: src/claude_swap/tui/dashboard.py:285
+#: src/claude_swap/tui/dashboard.py:288
 #, python-brace-format
 msgid "Language (restart): {language}"
 msgstr "Sprache (Neustart): {language}"
 
-#: src/claude_swap/tui/dashboard.py:321
+#: src/claude_swap/tui/dashboard.py:324
 #, python-brace-format
 msgid "Could not change {key}: {exc}"
 msgstr "{key} konnte nicht geändert werden: {exc}"
 
-#: src/claude_swap/tui/dashboard.py:359
+#: src/claude_swap/tui/dashboard.py:362
 msgid "menu"
 msgstr "Menü"
 
-#: src/claude_swap/tui/dashboard.py:360
+#: src/claude_swap/tui/dashboard.py:363
 msgid "settings"
 msgstr "Einstellungen"
 
-#: src/claude_swap/tui/dashboard.py:361
+#: src/claude_swap/tui/dashboard.py:364
 msgid "add account"
 msgstr "Konto hinzufügen"
 
-#: src/claude_swap/tui/dashboard.py:362
+#: src/claude_swap/tui/dashboard.py:365
 msgid "remove account"
 msgstr "Konto entfernen"
 
-#: src/claude_swap/tui/dashboard.py:363
+#: src/claude_swap/tui/dashboard.py:366
 msgid "disable / enable"
 msgstr "Deaktivieren / aktivieren"
 
-#: src/claude_swap/tui/dashboard.py:364
+#: src/claude_swap/tui/dashboard.py:367
 msgid "auto-switch view"
 msgstr "Automatikansicht"
 
-#: src/claude_swap/tui/dashboard.py:374
+#: src/claude_swap/tui/dashboard.py:377
 msgid "← back"
 msgstr "← zurück"
 
-#: src/claude_swap/tui/dashboard.py:435
+#: src/claude_swap/tui/dashboard.py:449
 msgid "Still checking Claude Code, try again in a moment"
 msgstr "Claude Code wird noch geprüft. Bitte kurz warten."
 
-#: src/claude_swap/tui/dashboard.py:451
+#: src/claude_swap/tui/dashboard.py:465
 #, python-brace-format
 msgid "Theme: {value}"
 msgstr "Design: {value}"
 
-#: src/claude_swap/tui/dashboard.py:680
+#: src/claude_swap/tui/dashboard.py:694
 msgid "Best / next"
 msgstr "Bestes / nächstes"
 
-#: src/claude_swap/tui/dashboard.py:689
+#: src/claude_swap/tui/dashboard.py:703
 msgid "switch to which account?"
 msgstr "Zu welchem Konto wechseln?"
 
-#: src/claude_swap/tui/dashboard.py:723
+#: src/claude_swap/tui/dashboard.py:737
 msgid "watching all accounts"
 msgstr "Alle Konten beobachten"
 
-#: src/claude_swap/tui/dashboard.py:724
+#: src/claude_swap/tui/dashboard.py:738
 msgid "switch to which account? · enter confirm · esc cancel"
 msgstr "Zu welchem Konto wechseln? · Enter bestätigen · Esc abbrechen"
 
-#: src/claude_swap/tui/dashboard.py:728 src/claude_swap/tui/modals.py:45
+#: src/claude_swap/tui/dashboard.py:742 src/claude_swap/tui/modals.py:45
 msgid "Confirm"
 msgstr "Bestätigen"
 
-#: src/claude_swap/tui/dashboard.py:729
+#: src/claude_swap/tui/dashboard.py:743
 msgid "Refresh"
 msgstr "Aktualisieren"
 
@@ -695,112 +725,312 @@ msgstr "(keine Ausgabe)"
 msgid "esc close"
 msgstr "Esc schließen"
 
-#: src/claude_swap/tui/widgets.py:115
+#: src/claude_swap/tui/option_help.py:8
+msgid ""
+"Choose a saved account to use. Codex must be restarted after switching to"
+" load the selected login."
+msgstr ""
+"Wähle ein gespeichertes Konto. Starte Codex nach einem Wechsel neu, damit"
+" die gewählte Anmeldung geladen wird."
+
+#: src/claude_swap/tui/option_help.py:11
+msgid ""
+"Monitor account quotas without switching. Press s in Watch to enable "
+"account selection."
+msgstr ""
+"Beobachte die Kontingente ohne Kontowechsel. Mit s aktivierst du in der "
+"Beobachtungsansicht die Kontoauswahl."
+
+#: src/claude_swap/tui/option_help.py:14
+msgid ""
+"Open the auto-switch view for a provider. It starts as a dry-run preview;"
+" press l and confirm to switch live. Closing the view stops its engine."
+msgstr ""
+"Öffnet die Automatikansicht eines Anbieters zunächst als Testlauf. Mit l "
+"und Bestätigung wird sie live. Beim Schließen endet ihre Automatik."
+
+#: src/claude_swap/tui/option_help.py:17
+msgid ""
+"Save your current login, or add a Claude setup token or API key, as a "
+"managed account."
+msgstr ""
+"Speichere deine aktuelle Anmeldung oder füge ein Claude-Setup-Token bzw. "
+"einen API-Schlüssel als verwaltetes Konto hinzu."
+
+#: src/claude_swap/tui/option_help.py:20
+msgid ""
+"Exclude an account from automatic selection without deleting its saved "
+"login. You can enable it again here."
+msgstr ""
+"Schließt ein Konto von der automatischen Auswahl aus, ohne seine "
+"gespeicherte Anmeldung zu löschen. Hier kannst du es wieder aktivieren."
+
+#: src/claude_swap/tui/option_help.py:23
+msgid ""
+"Choose an account whose saved credentials and configuration backup will "
+"be deleted. You will be asked to confirm."
+msgstr ""
+"Wähle ein Konto, dessen gespeicherte Anmeldedaten und "
+"Konfigurationssicherung gelöscht werden sollen. Du wirst um Bestätigung "
+"gebeten."
+
+#: src/claude_swap/tui/option_help.py:26
+msgid ""
+"Change appearance, account masking, switching policy and Claude Code "
+"integrations. Settings are saved for later runs."
+msgstr ""
+"Ändere Darstellung, Maskierung, Wechselregeln und Claude-Code-"
+"Integrationen. Einstellungen bleiben für spätere Starts gespeichert."
+
+#: src/claude_swap/tui/option_help.py:29
+msgid ""
+"Close this app. Any auto-switch engine started by this app stops; "
+"separately running auto processes are not stopped."
+msgstr ""
+"Schließt diese Anwendung und ihre eigenen Wechselautomaten. Separat "
+"gestartete Auto-Prozesse laufen weiter."
+
+#: src/claude_swap/tui/option_help.py:31
+msgid "Return to the previous menu without changing a setting."
+msgstr "Kehrt zum vorherigen Menü zurück, ohne eine Einstellung zu ändern."
+
+#: src/claude_swap/tui/option_help.py:33
+msgid "Cycle dark, light and auto. Auto follows the terminal background."
+msgstr ""
+"Wechselt zwischen dark, light und auto. auto richtet sich nach dem "
+"Terminalhintergrund."
+
+#: src/claude_swap/tui/option_help.py:36
+msgid ""
+"Cycle both providers, Claude only and Codex only. This filters the "
+"dashboard, Switch and Watch lists; administrative menus still show all "
+"accounts."
+msgstr ""
+"Wechselt zwischen beiden Anbietern, nur Claude und nur Codex. Filtert "
+"Dashboard, Kontowechsel und Beobachtung; Verwaltungsmenüs zeigen "
+"weiterhin alle Konten."
+
+#: src/claude_swap/tui/option_help.py:39
+msgid ""
+"Hide account emails and organization names in supported displays. This "
+"does not remove credentials or change the active login."
+msgstr ""
+"Verbirgt Konto-E-Mails und Organisationsnamen in unterstützten Ansichten."
+" Löscht keine Anmeldedaten und wechselt die aktive Anmeldung nicht."
+
+#: src/claude_swap/tui/option_help.py:42
+msgid ""
+"Cycle the default utilization threshold for automatic switching. More "
+"specific gates override it; weekly gates may inherit weeklyThreshold "
+"first. Disabled windows do not trigger switching."
+msgstr ""
+"Ändert die allgemeine Auslastungsschwelle für automatische Wechsel. "
+"Spezifische Grenzen haben Vorrang; Wochengrenzen können zuerst "
+"weeklyThreshold übernehmen. Deaktivierte Zeitfenster lösen keinen Wechsel"
+" aus."
+
+#: src/claude_swap/tui/option_help.py:45
+msgid ""
+"Cycle the 5-hour gate, then inherit. Automatic switching can trigger when"
+" any configured gate reaches its threshold."
+msgstr ""
+"Wechselt die 5-Stunden-Grenze und danach zur Vererbung. Jede erreichte "
+"konfigurierte Grenze kann einen automatischen Wechsel auslösen."
+
+#: src/claude_swap/tui/option_help.py:48
+msgid ""
+"Cycle the weekly gate, then inherit. Applies to Claude's 7-day window and"
+" Codex's weekly window."
+msgstr ""
+"Wechselt die Wochengrenze und danach zur Vererbung. Gilt für Claudes 7"
+"-Tage-Fenster und Codex' Wochenfenster."
+
+#: src/claude_swap/tui/option_help.py:51
+msgid ""
+"Cycle the Claude-only Fable weekly-model gate, then inherit. Other model "
+"thresholds are preserved. Exact values and additional models are "
+"available through ccswap config set."
+msgstr ""
+"Wechselt Claudes Fable-Wochengrenze und danach zur Vererbung. Andere "
+"Modellgrenzen bleiben erhalten. Exakte Werte und weitere Modelle setzt du"
+" mit ccswap config set."
+
+#: src/claude_swap/tui/option_help.py:54
+msgid ""
+"Cycle best and consume-first. Best favors quota headroom; consume-first "
+"proactively uses available quota whose weekly window resets sooner, even "
+"below the threshold. This does not redeem banked resets."
+msgstr ""
+"Wechselt best und consume-first. best bevorzugt freie Kapazität; consume-"
+"first nutzt vorausschauend Kontingent mit früherem Wochenreset, auch "
+"unterhalb der Schwelle. Gespeicherte Reset-Karten werden nicht eingelöst."
+
+#: src/claude_swap/tui/option_help.py:57
+msgid ""
+"Install or remove ccswap's Claude Code statusline. Turning it off "
+"restores the statusline configuration backed up during installation."
+msgstr ""
+"Installiert oder entfernt ccswaps Claude-Code-Statuszeile. Beim "
+"Abschalten wird die bei der Installation gesicherte Konfiguration "
+"wiederhergestellt."
+
+#: src/claude_swap/tui/option_help.py:60
+msgid ""
+"Enable or disable the ccswap Claude Code plugin. This may invoke Claude's"
+" plugin manager; it does not change your account."
+msgstr ""
+"Aktiviert oder deaktiviert das ccswap-Plug-in für Claude Code. Kann "
+"Claudes Plug-in-Verwaltung aufrufen; dein Konto bleibt gleich."
+
+#: src/claude_swap/tui/option_help.py:63
+msgid ""
+"Add a Claude setup token or API key. API-key requests are billed by "
+"usage; a setup token uses its account subscription."
+msgstr ""
+"Fügt ein Claude-Setup-Token oder einen API-Schlüssel hinzu. API-Anfragen "
+"werden nach Nutzung abgerechnet; ein Setup-Token verwendet das "
+"Kontoabonnement."
+
+#: src/claude_swap/tui/option_help.py:66
+msgid ""
+"Save the provider's current login as a managed account. An already "
+"managed login is refreshed in place."
+msgstr ""
+"Speichert die aktuelle Anmeldung des Anbieters als verwaltetes Konto. Bei"
+" einer bereits verwalteten Anmeldung werden die gespeicherten Daten "
+"aktualisiert."
+
+#: src/claude_swap/tui/option_help.py:69
+msgid ""
+"Remove this account's saved credentials and configuration backup after "
+"confirmation. Removal cannot be undone from this menu."
+msgstr ""
+"Entfernt nach Bestätigung die gespeicherten Anmeldedaten und die "
+"Konfigurationssicherung dieses Kontos. Hier lässt sich das nicht "
+"rückgängig machen."
+
+#: src/claude_swap/tui/option_help.py:72
+msgid ""
+"Toggle whether this account may be selected automatically. Its saved "
+"login remains stored."
+msgstr ""
+"Ändert, ob dieses Konto automatisch ausgewählt werden darf. Die "
+"gespeicherte Anmeldung bleibt erhalten."
+
+#: src/claude_swap/tui/option_help.py:75
+msgid ""
+"Choose the TUI language. The choice is saved; restart the dashboard to "
+"apply it. Commands, keyboard keys and account settings keep their "
+"original values."
+msgstr ""
+"Wählt die TUI-Sprache. Die Auswahl wird gespeichert; starte das Dashboard"
+" neu, um sie anzuwenden. Befehle, Tasten und Kontoeinstellungen behalten "
+"ihre ursprünglichen Werte."
+
+#: src/claude_swap/tui/widgets.py:116
 msgid "(ahead of pace)"
 msgstr "(Verbrauch voraus)"
 
-#: src/claude_swap/tui/widgets.py:195
-#, python-brace-format
-msgid "{count} banked"
-msgstr "{count} angespart"
-
-#: src/claude_swap/tui/widgets.py:198
-#, python-brace-format
-msgid " · earliest expires {expiry}"
-msgstr " · frühester Ablauf {expiry}"
-
-#: src/claude_swap/tui/widgets.py:217 src/claude_swap/tui/widgets.py:248
+#: src/claude_swap/tui/widgets.py:216 src/claude_swap/tui/widgets.py:247
 msgid "limit reached"
 msgstr "Grenze erreicht"
 
-#: src/claude_swap/tui/widgets.py:219
+#: src/claude_swap/tui/widgets.py:218
 msgid "unlimited"
 msgstr "unbegrenzt"
 
-#: src/claude_swap/tui/widgets.py:221
+#: src/claude_swap/tui/widgets.py:220
 msgid "none"
 msgstr "keine"
 
-#: src/claude_swap/tui/widgets.py:225
+#: src/claude_swap/tui/widgets.py:224
 #, python-brace-format
 msgid "{balance:,.2f} available"
 msgstr "{balance:,.2f} verfügbar"
 
-#: src/claude_swap/tui/widgets.py:227
+#: src/claude_swap/tui/widgets.py:226
 msgid "available"
 msgstr "verfügbar"
 
-#: src/claude_swap/tui/widgets.py:227
+#: src/claude_swap/tui/widgets.py:226
 msgid "available · balance not reported"
 msgstr "verfügbar · Kontostand nicht gemeldet"
 
-#: src/claude_swap/tui/widgets.py:250
+#: src/claude_swap/tui/widgets.py:249
 #, python-brace-format
 msgid "{remaining:,.2f} remaining"
 msgstr "{remaining:,.2f} übrig"
 
-#: src/claude_swap/tui/widgets.py:252
+#: src/claude_swap/tui/widgets.py:251
 #, python-brace-format
 msgid "{limit:,.2f} limit"
 msgstr "{limit:,.2f} Grenze"
 
-#: src/claude_swap/tui/widgets.py:260
+#: src/claude_swap/tui/widgets.py:259
 #, python-brace-format
 msgid " · {limit:,.2f} limit"
 msgstr " · {limit:,.2f} Grenze"
 
-#: src/claude_swap/tui/widgets.py:303
+#: src/claude_swap/tui/widgets.py:302
 msgid "   ● active"
 msgstr "   ● aktiv"
 
-#: src/claude_swap/tui/widgets.py:305
+#: src/claude_swap/tui/widgets.py:304
 msgid "   (disabled)"
 msgstr "   (deaktiviert)"
 
-#: src/claude_swap/tui/widgets.py:332
-msgid "usage unavailable"
-msgstr "Kontingent nicht verfügbar"
-
-#: src/claude_swap/tui/widgets.py:344 src/claude_swap/tui/widgets.py:436
-msgid "Weekly"
-msgstr "Woche"
-
-#: src/claude_swap/tui/widgets.py:373
-msgid "Credits "
-msgstr "Guthaben "
-
-#: src/claude_swap/tui/widgets.py:377
-msgid "Allowance "
-msgstr "Zuteilung "
-
-#: src/claude_swap/tui/widgets.py:381
+#: src/claude_swap/tui/widgets.py:312 src/claude_swap/tui/widgets.py:389
 msgid "Resets "
 msgstr "Reset-Karten "
 
-#: src/claude_swap/tui/widgets.py:446
-msgid " (ahead)"
-msgstr " (voraus)"
+#: src/claude_swap/tui/widgets.py:316
+msgid " · last known"
+msgstr " · letzter bekannter Stand"
 
-#: src/claude_swap/tui/widgets.py:463
-#, python-brace-format
-msgid "Credits {credits}"
-msgstr "Guthaben {credits}"
+#: src/claude_swap/tui/widgets.py:340
+msgid "usage unavailable"
+msgstr "Kontingent nicht verfügbar"
 
-#: src/claude_swap/tui/widgets.py:471
-#, python-brace-format
-msgid "Allowance {allowance}"
-msgstr "Zuteilung {allowance}"
+#: src/claude_swap/tui/widgets.py:352 src/claude_swap/tui/widgets.py:454
+msgid "Weekly"
+msgstr "Woche"
 
-#: src/claude_swap/tui/widgets.py:478
+#: src/claude_swap/tui/widgets.py:381
+msgid "Credits "
+msgstr "Guthaben "
+
+#: src/claude_swap/tui/widgets.py:385
+msgid "Allowance "
+msgstr "Zuteilung "
+
+#: src/claude_swap/tui/widgets.py:417 src/claude_swap/tui/widgets.py:496
 #, python-brace-format
 msgid "Resets {resets}"
 msgstr "Reset-Karten {resets}"
 
+#: src/claude_swap/tui/widgets.py:421
+msgid "last known · "
+msgstr "letzter bekannter Stand · "
+
+#: src/claude_swap/tui/widgets.py:464
+msgid " (ahead)"
+msgstr " (voraus)"
+
 #: src/claude_swap/tui/widgets.py:481
+#, python-brace-format
+msgid "Credits {credits}"
+msgstr "Guthaben {credits}"
+
+#: src/claude_swap/tui/widgets.py:489
+#, python-brace-format
+msgid "Allowance {allowance}"
+msgstr "Zuteilung {allowance}"
+
+#: src/claude_swap/tui/widgets.py:499
 msgid "usage unknown"
 msgstr "Kontingent unbekannt"
 
-#: src/claude_swap/tui/widgets.py:527
+#: src/claude_swap/tui/widgets.py:546
 msgid ""
 "No managed accounts yet.\n"
 "Use the menu below to add a Claude Code or Codex login."
@@ -808,11 +1038,11 @@ msgstr ""
 "Noch keine verwalteten Konten.\n"
 "Füge unten im Menü eine Claude-Code- oder Codex-Anmeldung hinzu."
 
-#: src/claude_swap/tui/widgets.py:548
+#: src/claude_swap/tui/widgets.py:567
 msgid "loading…"
 msgstr "wird geladen…"
 
-#: src/claude_swap/tui/widgets.py:578
+#: src/claude_swap/tui/widgets.py:597
 msgid "no active managed login"
 msgstr "Keine aktive verwaltete Anmeldung"
 
