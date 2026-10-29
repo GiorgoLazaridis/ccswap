@@ -18,10 +18,10 @@ from claude_swap import pace
 from claude_swap.json_output import USAGE_API_KEY
 from claude_swap.models import AccountSnapshot
 from claude_swap.switcher import ERROR_NOTES
-from claude_swap.usage_store import STALE_OK_S
 from claude_swap.tui import data
-from claude_swap.tui.data import PROVIDERS, PROVIDER_LABELS
+from claude_swap.tui.data import PROVIDER_LABELS, PROVIDERS
 from claude_swap.tui.theme import Palette
+from claude_swap.usage_store import STALE_OK_S
 
 if TYPE_CHECKING:
     from claude_swap.tui.app import CswapApp
@@ -79,7 +79,9 @@ def usage_bar(
     """One full bar line: ``5h ━━━━╸────┃──  47%  resets 2h 13m · 20:39``."""
     text = Text()
     text.append(f"{label} ", style=palette.muted)
-    text.append(bar_cells(pct, width, stale=stale, threshold=threshold, palette=palette))
+    text.append(
+        bar_cells(pct, width, stale=stale, threshold=threshold, palette=palette)
+    )
     if pct is None:
         text.append("  usage unknown", style=palette.muted)
     else:
@@ -90,27 +92,35 @@ def usage_bar(
     return text
 
 
-def _reset_parts(window: dict, now: float) -> tuple[str | None, str | None]:
+def _reset_parts(
+    window: dict, now: float, *, tr: Callable[[str], str] = str
+) -> tuple[str | None, str | None]:
     """Countdown suffix and its clock-extended variant for one window.
 
     ``("resets 2h 13m", "resets 2h 13m · 20:39")`` — the second form is what
     a row shows when it has the width for it. Equal when no clock is known.
     """
-    reset = data.reset_text(window, now)
+    reset = data.reset_text(window, now, tr=tr)
     if not reset:
         return None, None
     clock = data.reset_clock(window, now)
     return reset, f"{reset} · {clock}" if clock else reset
 
 
-def _pace_suffix(window: dict, fetched_at: float | None) -> str:
-    """"(ahead of pace)" when a weekly window is meaningfully ahead, else ""."""
+def _pace_suffix(
+    window: dict, fetched_at: float | None, *, tr: Callable[[str], str] = str
+) -> str:
+    """ "(ahead of pace)" when a weekly window is meaningfully ahead, else ""."""
     result = pace.compute_pace(window, fetched_at=fetched_at)
-    return "(ahead of pace)" if result and result.ahead else ""
+    return tr("(ahead of pace)") if result and result.ahead else ""
 
 
 def usage_rows(
-    last_good: dict | None, now: float, fetched_at: float | None = None
+    last_good: dict | None,
+    now: float,
+    fetched_at: float | None = None,
+    *,
+    tr: Callable[[str], str] = str,
 ) -> list[tuple[str, float, str, str]]:
     """(label, pct, suffix, suffix_full) rows mirroring the CLI's
     ``_format_usage_lines``.
@@ -131,7 +141,7 @@ def usage_rows(
     spend = last_good.get("spend")
     if spend:
         amounts = f"${spend['used']:,.2f} / ${spend['limit']:,.2f}"
-        reset, reset_full = _reset_parts(spend, now)
+        reset, reset_full = _reset_parts(spend, now, tr=tr)
         suffix = f"{reset}  {amounts}" if reset else amounts
         suffix_full = f"{reset_full}  {amounts}" if reset_full else amounts
         rows.append(("$$", float(spend["pct"]), suffix, suffix_full))
@@ -142,23 +152,30 @@ def usage_rows(
     ):
         window = last_good.get(key)
         if window:
-            reset, reset_full = _reset_parts(window, now)
+            reset, reset_full = _reset_parts(window, now, tr=tr)
             suffix, suffix_full = reset or "", reset_full or ""
             if key != "five_hour":
-                marker = _pace_suffix(window, fetched_at)
+                marker = _pace_suffix(window, fetched_at, tr=tr)
                 if marker:
                     suffix = f"{suffix}  {marker}" if suffix else marker
                     suffix_full = f"{suffix_full}  {marker}" if suffix_full else marker
-            rows.append((label, float(window["pct"]), suffix, suffix_full))
+            rows.append(
+                (
+                    label,
+                    float(window["pct"]),
+                    suffix,
+                    suffix_full,
+                )
+            )
     for window in last_good.get("scoped") or []:
         pct = float(window["pct"])
-        suffix, suffix_full = _reset_parts(window, now)
+        suffix, suffix_full = _reset_parts(window, now, tr=tr)
         suffix, suffix_full = suffix or "", suffix_full or ""
         if pct >= 100:
             suffix = f"{suffix}  (!)" if suffix else "(!)"
             suffix_full = f"{suffix_full}  (!)" if suffix_full else "(!)"
         else:
-            marker = _pace_suffix(window, fetched_at)
+            marker = _pace_suffix(window, fetched_at, tr=tr)
             if marker:
                 suffix = f"{suffix}  {marker}" if suffix else marker
                 suffix_full = f"{suffix_full}  {marker}" if suffix_full else marker
@@ -166,22 +183,28 @@ def usage_rows(
     return rows
 
 
-def reset_credits_text(last_good: dict | None, now: float) -> str | None:
+def reset_credits_text(
+    last_good: dict | None, now: float, *, tr: Callable[[str], str] = str
+) -> str | None:
     """Compact Codex banked-reset count and earliest expiry."""
     if not isinstance(last_good, dict):
         return None
     resets = last_good.get("reset_credits")
     if not isinstance(resets, dict) or not isinstance(resets.get("available"), int):
         return None
-    text = f"{resets['available']} banked"
-    expiry = data.reset_text({"resets_at": resets.get("expires_at")}, now)
+    text = tr("{count} banked").format(count=resets["available"])
+    expiry = data.reset_countdown({"resets_at": resets.get("expires_at")}, now, tr=tr)
     if expiry:
-        text += f" · earliest expires {expiry.removeprefix('resets ')}"
+        text += tr(" · earliest expires {expiry}").format(expiry=expiry)
     return text
 
 
 def credits_text(
-    last_good: dict | None, now: float, *, compact: bool = False
+    last_good: dict | None,
+    now: float,
+    *,
+    compact: bool = False,
+    tr: Callable[[str], str] = str,
 ) -> str | None:
     """Codex workspace/purchased credit balance."""
     del now
@@ -191,22 +214,26 @@ def credits_text(
     if not isinstance(credits, dict):
         return None
     if credits.get("limit_reached") is True:
-        return "limit reached"
+        return tr("limit reached")
     if credits.get("unlimited") is True:
-        return "unlimited"
+        return tr("unlimited")
     if credits.get("has_credits") is False:
-        return "none"
+        return tr("none")
 
     balance = credits.get("balance")
     if isinstance(balance, (int, float)):
-        return f"{balance:,.2f} available"
+        return tr("{balance:,.2f} available").format(balance=balance)
     if credits.get("has_credits") is True:
-        return "available" if compact else "available · balance not reported"
+        return tr("available") if compact else tr("available · balance not reported")
     return None
 
 
 def credit_allowance_text(
-    last_good: dict | None, now: float, *, compact: bool = False
+    last_good: dict | None,
+    now: float,
+    *,
+    compact: bool = False,
+    tr: Callable[[str], str] = str,
 ) -> str | None:
     """Per-user monthly workspace allowance, separate from credit balance."""
     if not isinstance(last_good, dict):
@@ -218,18 +245,20 @@ def credit_allowance_text(
     remaining = allowance.get("remaining")
     limit = allowance.get("limit")
     if allowance.get("limit_reached") is True:
-        text = "limit reached"
+        text = tr("limit reached")
     elif isinstance(remaining, (int, float)):
-        text = f"{remaining:,.2f} remaining"
+        text = tr("{remaining:,.2f} remaining").format(remaining=remaining)
     elif isinstance(limit, (int, float)):
-        text = f"{limit:,.2f} limit"
+        text = tr("{limit:,.2f} limit").format(limit=limit)
     else:
         return None
-    if not compact and isinstance(limit, (int, float)) and isinstance(
-        remaining, (int, float)
+    if (
+        not compact
+        and isinstance(limit, (int, float))
+        and isinstance(remaining, (int, float))
     ):
-        text += f" · {limit:,.2f} limit"
-    reset = data.reset_text({"resets_at": allowance.get("resets_at")}, now)
+        text += tr(" · {limit:,.2f} limit").format(limit=limit)
+    reset = data.reset_text({"resets_at": allowance.get("resets_at")}, now, tr=tr)
     if reset and not compact:
         text += f" · {reset}"
     return text
@@ -254,6 +283,7 @@ def account_card_text(
     now: float | None = None,
     palette: Palette = Palette.DARK,
     mask: bool = False,
+    tr: Callable[[str], str] = str,
 ) -> Text:
     """The full account card: header line + per-window bar rows."""
     now = now if now is not None else time.time()
@@ -270,10 +300,10 @@ def account_card_text(
     if tag:
         text.append(f"  {tag}", style=palette.muted)
     if acc.is_active:
-        text.append("   ● active", style=f"bold {palette.accent}")
+        text.append(tr("   ● active"), style=f"bold {palette.accent}")
     if acc.disabled:
-        text.append("   (disabled)", style=palette.muted)
-    age = data.format_age(acc.usage.age_s)
+        text.append(tr("   (disabled)"), style=palette.muted)
+    age = data.format_age(acc.usage.age_s, tr=tr)
     if age:
         text.append(f"   {age}", style=palette.muted)
 
@@ -293,13 +323,13 @@ def account_card_text(
                 text.append(f"└ {last_seen}", style=palette.muted)
         return text
 
-    rows = usage_rows(acc.usage.last_good, now, acc.usage.fetched_at)
-    credits = credits_text(acc.usage.last_good, now)
-    allowance = credit_allowance_text(acc.usage.last_good, now)
-    resets = reset_credits_text(acc.usage.last_good, now)
+    rows = usage_rows(acc.usage.last_good, now, acc.usage.fetched_at, tr=tr)
+    credits = credits_text(acc.usage.last_good, now, tr=tr)
+    allowance = credit_allowance_text(acc.usage.last_good, now, tr=tr)
+    resets = reset_credits_text(acc.usage.last_good, now, tr=tr)
     if not rows and not credits and not allowance and not resets:
         text.append("\n    ")
-        text.append("usage unavailable", style=palette.muted)
+        text.append(tr("usage unavailable"), style=palette.muted)
         if acc.usage.last_error:
             # Same wording as the CLI detail line: error KINDS with a
             # friendly note render it, so both surfaces describe the state
@@ -310,7 +340,11 @@ def account_card_text(
 
     if rows:
         stale = acc.usage.age_s is not None and acc.usage.age_s > STALE_OK_S
-        label_width = max(len(label) for label, _pct, _suffix, _full in rows)
+        display_labels = {
+            label: tr("Weekly") if label == "Weekly" else label
+            for label, _pct, _suffix, _full in rows
+        }
+        label_width = max(len(label) for label in display_labels.values())
         bar_width = max(12, min(30, width - 42 - label_width))
         # everything on a row except the suffix: indent, label, bar, " NNN%", gap
         row_overhead = 4 + label_width + 1 + bar_width + 5 + 2
@@ -325,7 +359,7 @@ def account_card_text(
             )
             text.append(
                 usage_bar(
-                    f"{label:<{label_width}}",
+                    f"{display_labels[label]:<{label_width}}",
                     pct,
                     suffix or None,
                     bar_width,
@@ -336,15 +370,15 @@ def account_card_text(
             )
     if credits:
         text.append("\n    ")
-        text.append("Credits ", style=palette.muted)
+        text.append(tr("Credits "), style=palette.muted)
         text.append(credits, style=palette.foreground)
     if allowance:
         text.append("\n    ")
-        text.append("Allowance ", style=palette.muted)
+        text.append(tr("Allowance "), style=palette.muted)
         text.append(allowance, style=palette.foreground)
     if resets:
         text.append("\n    ")
-        text.append("Resets ", style=palette.muted)
+        text.append(tr("Resets "), style=palette.muted)
         text.append(resets, style=palette.foreground)
     return text
 
@@ -355,6 +389,7 @@ def mini_account_text(
     *,
     palette: Palette = Palette.DARK,
     mask: bool = False,
+    tr: Callable[[str], str] = str,
 ) -> Text:
     """One minimized line for an inactive account.
 
@@ -373,7 +408,7 @@ def mini_account_text(
         text.append(email, style=palette.foreground)
     text.append(f"  [{org}]", style=palette.muted)
     if acc.disabled:
-        text.append("  (disabled)", style=palette.muted)
+        text.append(tr("  (disabled)"), style=palette.muted)
     text.append("   ")
 
     sentinel = acc.usage.sentinel
@@ -398,16 +433,17 @@ def mini_account_text(
         if parts:
             text.append(" · ", style=palette.track)
         color = palette.severity(pct)
-        text.append(f"{label} ", style=palette.muted)
+        display_label = tr("Weekly") if label == "Weekly" else label
+        text.append(f"{display_label} ", style=palette.muted)
         text.append(f"{pct:.0f}%", style=f"{color} dim" if stale else color)
         if pct >= 100:
-            reset = data.reset_text(window, now)
+            reset = data.reset_text(window, now, tr=tr)
             if reset:
                 text.append(f" ({reset})", style=palette.muted)
         elif key == "seven_day":
             result = pace.compute_pace(window, fetched_at=fetched_at)
             if result and result.ahead:
-                text.append(" (ahead)", style=palette.sev_warn)
+                text.append(tr(" (ahead)"), style=palette.sev_warn)
         parts += 1
     maxed = [
         w["name"]
@@ -419,26 +455,30 @@ def mini_account_text(
             text.append(" · ", style=palette.track)
         text.append(f"{name} (!)", style=palette.sev_crit)
         parts += 1
-    credits = credits_text(last_good, now, compact=True)
+    credits = credits_text(last_good, now, compact=True, tr=tr)
     if credits:
         if parts:
             text.append(" · ", style=palette.track)
-        text.append(f"Credits {credits}", style=palette.muted)
+        text.append(
+            tr("Credits {credits}").format(credits=credits), style=palette.muted
+        )
         parts += 1
-    allowance = credit_allowance_text(last_good, now, compact=True)
+    allowance = credit_allowance_text(last_good, now, compact=True, tr=tr)
     if allowance:
         if parts:
             text.append(" · ", style=palette.track)
-        text.append(f"Allowance {allowance}", style=palette.muted)
+        text.append(
+            tr("Allowance {allowance}").format(allowance=allowance), style=palette.muted
+        )
         parts += 1
-    resets = reset_credits_text(last_good, now)
+    resets = reset_credits_text(last_good, now, tr=tr)
     if resets:
         if parts:
             text.append(" · ", style=palette.track)
-        text.append(f"Resets {resets}", style=palette.muted)
+        text.append(tr("Resets {resets}").format(resets=resets), style=palette.muted)
         parts += 1
     if not parts:
-        text.append("usage unknown", style=palette.muted)
+        text.append(tr("usage unknown"), style=palette.muted)
     return text
 
 
@@ -479,13 +519,13 @@ class AccountsPanel(Static):
         palette = Palette.from_theme(app.current_theme)
         providers = (self.provider,) if self.provider is not None else PROVIDERS
         if all(
-            app.snapshots[provider] is not None
-            and not app.snapshots[provider].accounts
+            app.snapshots[provider] is not None and not app.snapshots[provider].accounts
             for provider in providers
         ):
             return Text(
-                "No managed accounts yet.\n"
-                "Use the menu below to add a Claude Code or Codex login.",
+                self.app.gettext(
+                    "No managed accounts yet.\nUse the menu below to add a Claude Code or Codex login."
+                ),
                 style=palette.muted,
             )
         now = time.time()
@@ -505,7 +545,7 @@ class AccountsPanel(Static):
             text.append(section_header_text(label, width, palette=palette))
             text.append("\n")
             if snap is None:
-                text.append(error or "loading…", style=palette.muted)
+                text.append(error or self.app.gettext("loading…"), style=palette.muted)
                 rendered_sections += 1
                 continue
 
@@ -520,16 +560,23 @@ class AccountsPanel(Static):
                             now=now,
                             palette=palette,
                             mask=app.mask_accounts,
+                            tr=app.gettext,
                         )
                     )
                 elif self._show_minis:
                     blocks.append(
                         mini_account_text(
-                            acc, now, palette=palette, mask=app.mask_accounts
+                            acc,
+                            now,
+                            palette=palette,
+                            mask=app.mask_accounts,
+                            tr=app.gettext,
                         )
                     )
             if not blocks:
-                text.append("no active managed login", style=palette.muted)
+                text.append(
+                    self.app.gettext("no active managed login"), style=palette.muted
+                )
             previous_multiline = False
             for i, block in enumerate(blocks):
                 multiline = "\n" in block.plain
@@ -565,9 +612,13 @@ class AccountCard(Static):
 
     def render(self) -> Text:
         return account_card_text(
-            self._acc, self.size.width or 80, threshold=self._threshold, tag=self._tag,
+            self._acc,
+            self.size.width or 80,
+            threshold=self._threshold,
+            tag=self._tag,
             palette=Palette.from_theme(self.app.current_theme),
             mask=bool(getattr(self.app, "mask_accounts", False)),
+            tr=self.app.gettext,
         )
 
 
