@@ -7187,6 +7187,49 @@ class TestPerGateThresholds:
         reasons = [e.reason for e in h.events if isinstance(e, NoSwitchEvent)]
         assert reasons == ["below-threshold"]
 
+    def test_weekly_threshold_alias_sets_the_weekly_gate(self, temp_home):
+        h = self._seed(temp_home, weekly_threshold=60.0)
+        outcome = h.tick_with_usage({
+            "1": _windows(10, 70),
+            "2": _windows(10, 10),
+            "3": _windows(20, 20),
+        })
+        assert outcome is TickOutcome.SWITCHED
+        assert h.active_number() == 2
+
+    def test_threshold_7d_outranks_the_weekly_threshold_alias(self, temp_home):
+        # weeklyThreshold 99 alone would hold 7d at 96; threshold7d 95 wins.
+        h = self._seed(
+            temp_home, threshold_5h=95.0, weekly_threshold=99.0, threshold_7d=95.0
+        )
+        outcome = h.tick_with_usage({
+            "1": _windows(10, 96),
+            "2": _windows(10, 10),
+            "3": _windows(20, 20),
+        })
+        assert outcome is TickOutcome.SWITCHED
+
+    def test_weekly_threshold_alias_covers_model_windows(self, temp_home):
+        h = self._seed(temp_home, model="Fable", weekly_threshold=60.0)
+        outcome = h.tick_with_usage({
+            "1": _windows(5, 5, 65),
+            "2": _windows(5, 5, 10),
+            "3": _windows(20, 20, 20),
+        })
+        assert outcome is TickOutcome.SWITCHED
+        assert h.active_number() == 2
+
+    def test_model_threshold_outranks_the_weekly_threshold_alias(self, temp_home):
+        h = self._seed(
+            temp_home, model="Fable", weekly_threshold=60.0, model_thresholds="Fable=70"
+        )
+        outcome = h.tick_with_usage({
+            "1": _windows(5, 5, 65),
+            "2": _windows(5, 5, 10),
+            "3": _windows(20, 20, 20),
+        })
+        assert outcome is TickOutcome.NO_ACTION
+
     def test_fable_gate_trips_without_autoswitch_model(self, temp_home):
         h = self._seed(temp_home, model_thresholds="Fable=40")
         outcome = h.tick_with_usage({

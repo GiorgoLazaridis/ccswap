@@ -12,6 +12,7 @@ from claude_swap import __version__, paths, printer
 from claude_swap.codex import CodexAccountSwitcher
 from claude_swap.exceptions import ClaudeSwitchError, ConfigError
 from claude_swap.json_output import error_envelope
+from claude_swap.models import Platform
 from claude_swap.printer import (
     accent,
     bolded,
@@ -21,7 +22,7 @@ from claude_swap.printer import (
     muted,
     warning,
 )
-from claude_swap.settings import load_ui_settings, load_update_settings
+from claude_swap.settings import load_run_settings, load_ui_settings, load_update_settings
 from claude_swap.switcher import ClaudeAccountSwitcher
 
 
@@ -157,13 +158,14 @@ Examples:
     parser.add_argument(
         "--share-history",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=None,
         help=(
             "Share conversation history (projects/ and history.jsonl) from "
             "~/.claude into the session profile, so every account sees one "
             "unified history. History the profile already accumulated is "
             "merged into ~/.claude first. --no-share-history restores "
-            "per-account history (the default). Not supported on Windows."
+            "per-account history (the default, unless `ccswap config set "
+            "run.shareHistory true`). Not supported on Windows."
         ),
     )
     parser.add_argument(
@@ -196,7 +198,7 @@ Examples:
                 args.account,
                 tail,
                 share=not args.no_share,
-                share_history=args.share_history,
+                share_history=_resolve_share_history(args, switcher),
                 require_session=args.require_session,
             )
             return  # only reachable in tests where exec/exit is mocked
@@ -209,7 +211,7 @@ Examples:
                 slot,
                 tail,
                 share=not args.no_share,
-                share_history=args.share_history,
+                share_history=_resolve_share_history(args, switcher),
                 require_session=args.require_session,
             )
             return  # only reachable in tests
@@ -244,6 +246,26 @@ def _refuse_session_in_file_backend(switcher: ClaudeAccountSwitcher) -> None:
             "ccswap run (session mode) needs the macOS Keychain and is not "
             "supported with credentials.backend file. Use `ccswap switch` instead."
         )
+
+
+def _resolve_share_history(args: argparse.Namespace, switcher) -> bool:
+    """The flag wins; otherwise run.shareHistory, which Windows can't honor.
+
+    An explicit --share-history still reaches SessionManager.run and errors
+    there; a setting-derived one just warns and falls back to per-account
+    history. Only called on account-targeting paths, so a bare unmapped run
+    (plain claude) stays silent.
+    """
+    if args.share_history is not None:
+        return args.share_history
+    enabled = load_run_settings(switcher.backup_dir).share_history
+    if enabled and switcher.platform == Platform.WINDOWS:
+        warning(
+            "run.shareHistory is not supported on Windows yet — "
+            "using per-account history."
+        )
+        return False
+    return enabled
 
 
 def _guard_root(switcher: ClaudeAccountSwitcher) -> None:
@@ -807,6 +829,8 @@ def _gate_banner(settings) -> str:
         parts.append(f"5h {settings.threshold_5h:g}%")
     if settings.threshold_7d is not None:
         parts.append(f"7d {settings.threshold_7d:g}%")
+    if settings.weekly_threshold is not None:
+        parts.append(f"weekly {settings.weekly_threshold:g}%")
     for name, pct in parse_model_thresholds(settings.model_thresholds):
         parts.append(f"{name} {pct:g}%")
     if not parts:
@@ -843,8 +867,9 @@ Exit codes with --once:
   3  blocked: wanted to switch but no viable target / all exhausted
 
 Examples:
-  ccswap auto                       # foreground loop, switch at 90%% used
+  ccswap auto                       # foreground loop, switch at 90% used
   ccswap auto --threshold 80        # switch earlier
+  ccswap auto --weekly-threshold 97 # let the 7d/model windows run higher
   ccswap auto --model Fable         # also switch when the Fable weekly limit is hit
   ccswap auto --json                # one JSON event per line (for scripts)
   ccswap auto --once; echo $?       # single tick, outcome in exit code
@@ -876,6 +901,16 @@ Defaults live in settings.json in the backup root; flags override them.
         help=(
             "Switch when the active account's binding 5h/7d window reaches "
             "this utilization (50-99.9; default 90)"
+        ),
+    )
+    parser.add_argument(
+        "--weekly-threshold",
+        type=float,
+        metavar="PCT",
+        help=(
+            "Gate for the 7d and per-model windows, below threshold7d/"
+            "modelThresholds (50-99.9; default: the threshold). A flag cannot "
+            "unset a configured value; use 'ccswap config unset'"
         ),
     )
     parser.add_argument(
@@ -1050,6 +1085,7 @@ Examples:
   ccswap config                              # list effective settings
   ccswap config get autoswitch.threshold
   ccswap config set autoswitch.threshold 80
+  ccswap config set autoswitch.weeklyThreshold 97  # 7d/model gate (threshold7d wins)
   ccswap config unset autoswitch.threshold   # back to the default
   ccswap config set claude.statusline on     # ccswap statusline in Claude Code
   ccswap config set claude.mod on            # install the ccswap mod
